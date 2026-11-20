@@ -2,10 +2,21 @@ import time
 import unittest
 from unittest.mock import patch
 
-from mail_providers.icloud_relay import ICloudRelayProvider
+from mail_providers.icloud_relay import ICloudRelayProvider, parse_relay_html
 
 
 class ICloudRelayWaiterTest(unittest.TestCase):
+    def test_mailhub_epoch_time_is_used_as_message_timestamp(self):
+        messages = parse_relay_html(
+            "<main><article><header><b>Your verification code</b>"
+            "<time>1795172802.6337237</time></header>"
+            "<p>ChatGPT</p><div><span>699389</span></div>"
+            "</article></main>"
+        )
+        self.assertTrue(messages)
+        self.assertEqual(messages[0]["otp"], "699389")
+        self.assertAlmostEqual(messages[0]["ts"], 1795172802.6337237)
+
     def test_message_arriving_during_initial_snapshot_is_not_marked_seen(self):
         provider = ICloudRelayProvider(
             "alias@icloud.com",

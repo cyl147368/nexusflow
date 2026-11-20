@@ -184,6 +184,13 @@ def _parse_date(s: str) -> Optional[float]:
     s = (s or "").strip()
     if not s:
         return None
+    if re.fullmatch(r"\d{10}(?:\.\d+)?", s):
+        try:
+            value = float(s)
+            if 946684800 <= value <= 4102444800:
+                return value
+        except ValueError:
+            pass
 
     # 版式 B：有星期几或月份缩写 → 走 RFC2822
     if "," in s or re.search(r"\b[A-Z][a-z]{2}\b", s):
@@ -391,6 +398,7 @@ _RE_CODE6 = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 _RE_TS_ANY = re.compile(
     r"\d{4}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|z|[+-]\d{2}:?\d{2})?"
     r"|[A-Z][a-z]{2},\s*\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*[+-]\d{4}"
+    r"|\b1[6-9]\d{8}(?:\.\d+)?\b"
 )
 
 _BRAND = ("openai", "chatgpt")
