@@ -35,21 +35,20 @@ export const useProxyStore = defineStore('proxy', () => {
     try {
       const response = await getProxyPool()
       let items = response.items || []
-      if (!items.length) {
-        let legacy = []
-        try { legacy = JSON.parse(localStorage.getItem(LEGACY_KEY) || '[]') } catch (_) { legacy = [] }
-        if (!legacy.length) {
-          try {
-            const old = JSON.parse(localStorage.getItem(OLD_FORM_KEY) || '{}')
-            if (old.autoProxyPool) legacy = dedup(parseLines(old.autoProxyPool))
-          } catch (_) { /* ignore */ }
-        }
-        if (legacy.length) {
-          const migrated = await replaceProxyPool(dedup(legacy))
-          items = migrated.items || []
-          localStorage.removeItem(LEGACY_KEY)
-        }
+      let legacy = []
+      try { legacy = JSON.parse(localStorage.getItem(LEGACY_KEY) || '[]') } catch (_) { legacy = [] }
+      if (!legacy.length) {
+        try {
+          const old = JSON.parse(localStorage.getItem(OLD_FORM_KEY) || '{}')
+          if (old.autoProxyPool) legacy = dedup(parseLines(old.autoProxyPool))
+        } catch (_) { /* ignore */ }
       }
+      const merged = dedup([...items, ...legacy].map((item) => String(item).trim()).filter(Boolean))
+      if (legacy.length && merged.length !== items.length) {
+        const migrated = await replaceProxyPool(merged)
+        items = migrated.items || []
+      }
+      if (legacy.length) localStorage.removeItem(LEGACY_KEY)
       list.value = items
       loaded.value = true
       return list.value
