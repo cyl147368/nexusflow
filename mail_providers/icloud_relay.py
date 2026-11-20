@@ -983,6 +983,13 @@ class ICloudRelayProvider(MailProvider):
         if not self._snapshot_done:
             try:
                 for m in self._messages():
+                    # The first relay scan can itself take 10-20 seconds. An OTP
+                    # that arrives while that scan is running must not be added
+                    # to the "already seen" set, otherwise the entire wait
+                    # times out even though the code is visible in the inbox.
+                    msg_ts = m.get("ts")
+                    if cutoff and (msg_ts is None or msg_ts >= cutoff):
+                        continue
                     self._seen.add(self._fp(m))
                 self._snapshot_done = True
                 logger.debug(f"[icloud_relay] 初始已有 {len(self._seen)} 封，跳过")
