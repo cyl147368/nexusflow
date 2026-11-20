@@ -81,6 +81,13 @@ jobs:
             esac
           done < <(systemctl list-units --type=service --state=running --no-pager --no-legend)
 
+          # Host nginx only served the retired GPT Auto Register reverse proxy
+          # on :8765. Sub2API owns its own containerized nginx on :80/:443.
+          if systemctl is-active --quiet nginx.service; then
+            echo "STOP nginx.service (host legacy :8765 only)"
+            systemctl stop nginx.service
+          fi
+
           echo "===== FINAL CONTAINERS ====="
           docker ps -a --format '{{.Names}}\t{{.Status}}'
           REMOTE
