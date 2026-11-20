@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class PaymentDetectorTest(unittest.TestCase):
@@ -75,6 +76,24 @@ class PaymentDetectorTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("momo", response.text)
+
+    def test_started_run_is_persisted_immediately(self):
+        headers = {"Authorization": "Bearer test-token"}
+        with patch("service._run_qualification"):
+            started = self.client.post(
+                "/api/check",
+                headers=headers,
+                json={
+                    "emails": ["ok@example.com"],
+                    "methods": ["momo"],
+                    "proxies": {"momo": "socks5://127.0.0.1:1080"},
+                },
+            )
+        self.assertEqual(started.status_code, 200)
+        run_id = started.json()["run_id"]
+        fetched = self.client.get(f"/api/runs/{run_id}", headers=headers)
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json()["run"]["status"], "running")
 
     def test_auth_required(self):
         self.assertEqual(self.client.get("/api/candidates").status_code, 401)

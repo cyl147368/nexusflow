@@ -86,6 +86,7 @@ def _init_results_db() -> None:
                 ON qualification_results(email, checked_at DESC);
             """
         )
+        con.commit()
 
 
 def _prepare_upstream_config() -> None:
@@ -347,6 +348,7 @@ def start_check(req: CheckReq, _: None = Depends(_require_admin)):
             " VALUES (?,?,?,?,?,?)",
             (run_id, "running", ",".join(methods), total, 0, time.time()),
         )
+        con.commit()
     thread = threading.Thread(
         target=_run_qualification,
         args=(run_id, usable, methods, proxies, req.countries, req.timeout, req.workers),
@@ -444,11 +446,13 @@ def _run_qualification(
                         "UPDATE qualification_runs SET completed=? WHERE run_id=?",
                         (completed, run_id),
                     )
+                    con.commit()
         with _writer_lock, closing(_result_conn()) as con:
             con.execute(
                 "UPDATE qualification_runs SET status='completed', finished_at=? WHERE run_id=?",
                 (time.time(), run_id),
             )
+            con.commit()
     except Exception as exc:
         logger.exception("qualification run failed")
         with _writer_lock, closing(_result_conn()) as con:
@@ -456,6 +460,7 @@ def _run_qualification(
                 "UPDATE qualification_runs SET status='failed', finished_at=?, error=? WHERE run_id=?",
                 (time.time(), str(exc)[:500], run_id),
             )
+            con.commit()
 
 
 @app.get("/api/runs/{run_id}")
