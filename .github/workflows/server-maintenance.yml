@@ -12,6 +12,7 @@ on:
           - inspect
           - stop-non-core
           - start-cache-forge
+          - start-cache-forge-public
 
 permissions:
   contents: read
@@ -57,6 +58,14 @@ jobs:
             echo "===== STARTING CACHE FORGE ====="
             systemctl start cache-forge.service
             systemctl --no-pager --full status cache-forge.service || true
+            ss -ltnp
+            exit 0
+          fi
+
+          if [ "$ACTION" = "start-cache-forge-public" ]; then
+            echo "===== STARTING CACHE FORGE PUBLIC PROXY ====="
+            systemctl start cache-forge-public.service
+            systemctl --no-pager --full status cache-forge-public.service || true
             ss -ltnp
             exit 0
           fi
