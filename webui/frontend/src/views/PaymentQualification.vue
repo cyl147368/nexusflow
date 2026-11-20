@@ -155,6 +155,7 @@ load()
             {{ health.ok ? '检测服务在线' : '检测服务离线' }}
           </el-tag>
           <span>{{ health.registered_accounts || 0 }} 个已注册账号</span>
+          <span>Node {{ health.node || '未就绪' }} · Chromium {{ health.chromium ? '就绪' : '未就绪' }}</span>
         </div>
       </div>
     </el-card>

@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -226,12 +228,29 @@ def startup() -> None:
 @app.get("/api/health")
 def health(_: None = Depends(_require_admin)):
     rows = _registered_rows()
+    node = shutil.which("node") or ""
+    node_version = ""
+    if node:
+        try:
+            node_version = subprocess.run(
+                [node, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            ).stdout.strip()
+        except Exception:
+            node_version = "unavailable"
+    chromium_dir = Path(os.getenv("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright"))
+    chromium = any(chromium_dir.glob("chromium-*")) if chromium_dir.is_dir() else False
     return {
         "ok": True,
         "service": "nexusflow-payment-detector",
         "registered_accounts": len(rows),
         "main_db_exists": MAIN_DB.is_file(),
         "methods": sorted(ALLOWED_METHODS),
+        "node": node_version,
+        "chromium": chromium,
     }
 
 
