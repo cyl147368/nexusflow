@@ -221,6 +221,18 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(job["success_count"], 2)
         self.assertEqual(qualify.call_count, 2)
 
+    def test_registration_relay_uses_internal_service_url(self):
+        from webui import integration
+
+        relay = integration._internal_relay_url(
+            "http://mail-hub:8090",
+            {"token": "token/with spaces"},
+        )
+        self.assertEqual(
+            relay,
+            "http://mail-hub:8090/mail/token%2Fwith%20spaces",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

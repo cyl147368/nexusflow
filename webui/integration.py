@@ -388,6 +388,23 @@ def _redact_proxy(proxy: str) -> str:
         return "代理"
 
 
+def _internal_relay_url(mailhub_url: str, mailbox: dict) -> str:
+    """Return a container-to-container relay URL for the registration runner.
+
+    ``relay_url`` is deliberately public so the operator can open it in a
+    browser. The NexusFlow container cannot reliably reach its own host's
+    published port (hairpin NAT); registration therefore reads the same relay
+    through the compose service name.
+    """
+    token = str(mailbox.get("token") or "").strip()
+    if not token:
+        raise IntegrationError("邮件中转服务没有返回 mailbox token")
+    return _service_url(
+        mailhub_url,
+        f"/mail/{urllib.parse.quote(token, safe='')}",
+    )
+
+
 def _preflight_registration_network(proxy: str) -> None:
     """Verify ChatGPT connectivity and oai-did before creating a hidden alias."""
     from http_client import create_http_session
@@ -641,10 +658,12 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
     relay_url = str(mailbox.get("relay_url") or "").strip()
     if not relay_url:
         raise IntegrationError("邮件中转服务没有返回 relay_url")
+    internal_relay_url = _internal_relay_url(cfg["mailhub_url"], mailbox)
+    mailbox["internal_relay_url"] = internal_relay_url
     _set_job(stage="filling_pool", relay_url=relay_url, mailbox=mailbox)
     _log("取件链接已生成，正在写入主项目邮箱池")
 
-    db.import_accounts(f"{email}----{relay_url}", kind="icloud_relay")
+    db.import_accounts(f"{email}----{internal_relay_url}", kind="icloud_relay")
     db.set_setting("mail_source", "icloud_relay")
     if resuming:
         completed = db.get_registered(email)
