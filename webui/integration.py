@@ -272,6 +272,26 @@ def delete_icloud_alias(account_id: str, anonymous_id: str) -> dict:
     return {"ok": True, "result": _data(response)}
 
 
+def set_icloud_alias_active(account_id: str, anonymous_id: str, active: bool) -> dict:
+    cfg = db.get_integration_internal_config()
+    account_id = (account_id or cfg.get("icloud_account_id") or "").strip()
+    anonymous_id = (anonymous_id or "").strip()
+    if not account_id or not anonymous_id:
+        raise IntegrationError("account_id 和别名 ID 必填")
+    action = "reactivate" if active else "deactivate"
+    response = _request_json(
+        "POST",
+        _service_url(
+            cfg["icloud_url"],
+            f"/api/aliases/{urllib.parse.quote(anonymous_id, safe='')}/{action}",
+        ),
+        token=cfg["icloud_token"],
+        payload={"account_id": account_id},
+        timeout=60,
+    )
+    return {"ok": True, "active": active, "result": _data(response)}
+
+
 def _set_job(**updates) -> dict:
     global _job
     with _job_lock:

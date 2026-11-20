@@ -1151,6 +1151,12 @@ class ICloudAliasDeleteReq(BaseModel):
     anonymous_id: str
 
 
+class ICloudAliasStateReq(BaseModel):
+    account_id: Optional[str] = None
+    anonymous_id: str
+    active: bool
+
+
 class PaymentCheckReq(BaseModel):
     emails: list[str] = Field(default_factory=list)
     methods: list[str] = Field(default_factory=lambda: ["momo", "upi"])
@@ -1227,6 +1233,16 @@ def api_integration_icloud_aliases(account_id: str = ""):
 def api_integration_icloud_alias_delete(req: ICloudAliasDeleteReq):
     try:
         return integration.delete_icloud_alias(req.account_id or "", req.anonymous_id)
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/icloud/aliases/state")
+def api_integration_icloud_alias_state(req: ICloudAliasStateReq):
+    try:
+        return integration.set_icloud_alias_active(
+            req.account_id or "", req.anonymous_id, req.active
+        )
     except integration.IntegrationError as exc:
         raise HTTPException(400, str(exc)) from exc
 

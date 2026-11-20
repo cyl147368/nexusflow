@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onActivated, onDeactivated, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createICloudAccount,
   deleteICloudAlias,
@@ -10,11 +10,12 @@ import {
   listICloudAccounts,
   normalizeCookie,
   saveIntegrationConfig,
+  setICloudAliasState,
   startIntegration,
   testICloud,
   testMailHub,
 } from '@/api/integration'
-import { fmtTime } from '@/api/request'
+import { copyText, fmtTime } from '@/api/request'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -25,6 +26,11 @@ const activeStep = ref(0)
 const accounts = ref([])
 const aliases = ref([])
 const aliasesBusy = ref(false)
+const aliasSearch = ref('')
+const aliasStatus = ref('all')
+const aliasPage = ref(1)
+const aliasPageSize = ref(20)
+const aliasActionBusy = ref('')
 const job = ref({ status: 'idle', stage: 'idle', logs: [] })
 let timer = null
 
@@ -73,6 +79,42 @@ const stageLabel = computed(() => ({
   registration_failed: '注册失败',
   registration_timeout: '等待注册超时',
 }[job.value.stage] || job.value.stage))
+
+const filteredAliases = computed(() => {
+  const keyword = aliasSearch.value.trim().toLowerCase()
+  return aliases.value.filter((item) => {
+    if (aliasStatus.value === 'active' && item.active === false) return false
+    if (aliasStatus.value === 'inactive' && item.active !== false) return false
+    if (!keyword) return true
+    return `${item.email || ''} ${item.label || ''}`.toLowerCase().includes(keyword)
+  })
+})
+
+const pagedAliases = computed(() => {
+  const start = (aliasPage.value - 1) * aliasPageSize.value
+  return filteredAliases.value.slice(start, start + aliasPageSize.value)
+})
+
+const activeAliasCount = computed(
+  () => aliases.value.filter((item) => item.active !== false).length,
+)
+const inactiveAliasCount = computed(
+  () => aliases.value.filter((item) => item.active === false).length,
+)
+
+function aliasId(alias) {
+  return alias?.anonymousId || alias?.anonymous_id || alias?.id || ''
+}
+
+function aliasTime(value) {
+  if (!value) return '—'
+  const numeric = Number(value)
+  const date = Number.isFinite(numeric)
+    ? new Date(numeric > 10_000_000_000 ? numeric : numeric * 1000)
+    : new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
 
 function configPayload() {
   const payload = { ...form.value }
@@ -175,6 +217,7 @@ async function loadAliases() {
   try {
     const r = await listICloudAliases(form.value.icloud_account_id)
     aliases.value = r.aliases || []
+    aliasPage.value = 1
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -183,19 +226,60 @@ async function loadAliases() {
 }
 
 async function removeAlias(alias) {
-  const id = alias.anonymousId || alias.anonymous_id || alias.id
+  const id = aliasId(alias)
   if (!id) return
+  try {
+    await ElMessageBox.confirm(
+      `确定永久删除 ${alias.email}？删除后这个隐藏邮箱地址不能恢复。`,
+      '删除隐藏邮箱',
+      { type: 'warning', confirmButtonText: '永久删除', cancelButtonText: '取消' },
+    )
+  } catch (_) {
+    return
+  }
+  aliasActionBusy.value = `delete:${id}`
   try {
     await deleteICloudAlias({
       account_id: form.value.icloud_account_id,
       anonymous_id: id,
     })
-    aliases.value = aliases.value.filter(
-      (item) => (item.anonymousId || item.anonymous_id || item.id) !== id,
-    )
+    aliases.value = aliases.value.filter((item) => aliasId(item) !== id)
     ElMessage.success('iCloud 隐藏邮箱已删除')
   } catch (e) {
     ElMessage.error(e.message)
+  } finally {
+    aliasActionBusy.value = ''
+  }
+}
+
+async function toggleAlias(alias) {
+  const id = aliasId(alias)
+  if (!id) return
+  const nextActive = alias.active === false
+  if (!nextActive) {
+    try {
+      await ElMessageBox.confirm(
+        `停用后，发送到 ${alias.email} 的新邮件将停止转发。地址会保留，可随时重新启用。`,
+        '停用隐藏邮箱',
+        { type: 'warning', confirmButtonText: '停用', cancelButtonText: '取消' },
+      )
+    } catch (_) {
+      return
+    }
+  }
+  aliasActionBusy.value = `state:${id}`
+  try {
+    await setICloudAliasState({
+      account_id: form.value.icloud_account_id,
+      anonymous_id: id,
+      active: nextActive,
+    })
+    alias.active = nextActive
+    ElMessage.success(nextActive ? '已恢复邮件转发' : '已暂停邮件转发')
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    aliasActionBusy.value = ''
   }
 }
 
@@ -336,29 +420,121 @@ startPolling()
         </div>
       </el-card>
 
-      <el-card shadow="never" class="config-card wide">
+      <el-card shadow="never" class="config-card wide alias-card">
         <template #header>
-          <div class="card-head">
-            <span>iCloud 隐藏邮箱管理</span>
-            <el-button size="small" :loading="aliasesBusy" @click="loadAliases">读取别名列表</el-button>
+          <div class="alias-card-head">
+            <div>
+              <div class="alias-title">
+                <span>iCloud 隐藏邮箱</span>
+                <el-tag type="info" effect="plain" size="small">{{ aliases.length }} 个</el-tag>
+              </div>
+              <p>可搜索、复制、暂停转发或永久删除；备注来自创建时的标签。</p>
+            </div>
+            <el-button type="primary" plain :loading="aliasesBusy" @click="loadAliases">
+              刷新列表
+            </el-button>
           </div>
         </template>
-        <el-table :data="aliases" size="small" empty-text="点击读取别名列表">
-          <el-table-column prop="email" label="隐藏邮箱" min-width="220" />
-          <el-table-column prop="label" label="标签" min-width="140" />
-          <el-table-column prop="active" label="状态" width="90">
+
+        <div class="alias-stats">
+          <div class="alias-stat">
+            <span>全部地址</span>
+            <strong>{{ aliases.length }}</strong>
+          </div>
+          <div class="alias-stat active">
+            <span>转发中</span>
+            <strong>{{ activeAliasCount }}</strong>
+          </div>
+          <div class="alias-stat inactive">
+            <span>已停用</span>
+            <strong>{{ inactiveAliasCount }}</strong>
+          </div>
+          <div class="alias-account">
+            当前账号
+            <b>{{ accounts.find((item) => item.id === form.icloud_account_id)?.name || form.icloud_account_id || '未选择' }}</b>
+          </div>
+        </div>
+
+        <div class="alias-toolbar">
+          <el-input
+            v-model="aliasSearch" clearable
+            placeholder="搜索邮箱或备注"
+            class="alias-search"
+            @input="aliasPage = 1"
+          />
+          <el-select v-model="aliasStatus" class="alias-filter" @change="aliasPage = 1">
+            <el-option label="全部状态" value="all" />
+            <el-option label="转发中" value="active" />
+            <el-option label="已停用" value="inactive" />
+          </el-select>
+          <span class="alias-tip">停用仅暂停转发，地址仍保留；删除不可恢复。</span>
+        </div>
+
+        <el-table
+          :data="pagedAliases"
+          row-key="email"
+          size="small"
+          max-height="560"
+          empty-text="没有可显示的隐藏邮箱"
+          class="alias-table"
+        >
+          <el-table-column label="隐藏邮箱" min-width="270">
             <template #default="{ row }">
-              <el-tag :type="row.active === false ? 'info' : 'success'" size="small">
-                {{ row.active === false ? '停用' : '启用' }}
-              </el-tag>
+              <div class="alias-email-cell">
+                <code>{{ row.email }}</code>
+                <el-button link type="primary" @click="copyText(row.email)">复制</el-button>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="90" align="right">
+          <el-table-column label="备注" min-width="190">
             <template #default="{ row }">
-              <el-button link type="danger" @click="removeAlias(row)">删除</el-button>
+              <span v-if="row.label" class="alias-note">{{ row.label }}</span>
+              <span v-else class="alias-note empty">未备注</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="创建时间" width="180">
+            <template #default="{ row }">
+              <span class="alias-time">{{ aliasTime(row.createdAt || row.created_at) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="转发状态" width="110" align="center">
+            <template #default="{ row }">
+              <span class="alias-status" :class="{ off: row.active === false }">
+                <i></i>{{ row.active === false ? '已停用' : '转发中' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="155" align="right" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                link
+                :type="row.active === false ? 'success' : 'warning'"
+                :loading="aliasActionBusy === `state:${aliasId(row)}`"
+                @click="toggleAlias(row)"
+              >
+                {{ row.active === false ? '启用' : '停用' }}
+              </el-button>
+              <el-button
+                link type="danger"
+                :loading="aliasActionBusy === `delete:${aliasId(row)}`"
+                @click="removeAlias(row)"
+              >
+                删除
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
+
+        <div class="alias-footer">
+          <el-pagination
+            v-model:current-page="aliasPage"
+            v-model:page-size="aliasPageSize"
+            :page-sizes="[10, 20, 50, 100]"
+            :total="filteredAliases.length"
+            layout="total, sizes, prev, pager, next"
+            @size-change="aliasPage = 1"
+          />
+        </div>
       </el-card>
 
       <el-card shadow="never" class="config-card">
@@ -448,10 +624,81 @@ startPolling()
 .hint { color: var(--el-text-color-secondary); font-size: 13px; }
 .cookie-actions { display: flex; align-items: center; gap: 12px; margin-top: -6px; }
 code { color: var(--el-color-primary); }
+.alias-card {
+  border: 1px solid var(--el-color-primary-light-8);
+  background:
+    radial-gradient(circle at 100% 0, var(--el-color-primary-light-9), transparent 28%),
+    var(--el-bg-color);
+}
+.alias-card :deep(.el-card__header) { padding: 18px 20px; }
+.alias-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.alias-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
+.alias-card-head p { margin: 6px 0 0; color: var(--el-text-color-secondary); font-size: 13px; }
+.alias-stats {
+  display: grid; grid-template-columns: repeat(3, minmax(120px, 170px)) 1fr;
+  gap: 10px; margin-bottom: 14px;
+}
+.alias-stat {
+  padding: 11px 14px; border-radius: 10px; border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-lighter);
+  display: flex; justify-content: space-between; align-items: baseline;
+}
+.alias-stat span { color: var(--el-text-color-secondary); font-size: 12px; }
+.alias-stat strong { font-size: 20px; color: var(--el-text-color-primary); }
+.alias-stat.active strong { color: var(--el-color-success); }
+.alias-stat.inactive strong { color: var(--el-text-color-secondary); }
+.alias-account {
+  align-self: center; justify-self: end; color: var(--el-text-color-secondary);
+  font-size: 12px; overflow-wrap: anywhere;
+}
+.alias-account b { display: block; margin-top: 3px; color: var(--el-text-color-primary); }
+.alias-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.alias-search { width: 280px; }
+.alias-filter { width: 130px; }
+.alias-tip { color: var(--el-text-color-secondary); font-size: 12px; }
+.alias-table {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px; overflow: hidden;
+}
+.alias-table :deep(.el-table__header th) {
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-regular);
+  font-weight: 600;
+}
+.alias-table :deep(.el-table__row) { transition: background-color .16s ease; }
+.alias-table :deep(.el-table__row:hover > td.el-table__cell) {
+  background: var(--el-color-primary-light-9) !important;
+}
+.alias-email-cell { display: flex; align-items: center; gap: 6px; }
+.alias-email-cell code {
+  color: var(--el-text-color-primary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.alias-note { display: inline-block; max-width: 100%; color: var(--el-text-color-regular); overflow-wrap: anywhere; }
+.alias-note.empty { color: var(--el-text-color-placeholder); font-style: italic; }
+.alias-time { color: var(--el-text-color-secondary); font-size: 12px; white-space: nowrap; }
+.alias-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; border-radius: 999px;
+  color: var(--el-color-success); background: var(--el-color-success-light-9);
+  font-size: 12px; white-space: nowrap;
+}
+.alias-status i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: currentColor; box-shadow: 0 0 0 3px var(--el-color-success-light-8);
+}
+.alias-status.off { color: var(--el-text-color-secondary); background: var(--el-fill-color); }
+.alias-status.off i { box-shadow: none; }
+.alias-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; }
   .config-card.wide { grid-column: auto; }
   .account-form { grid-template-columns: 1fr 1fr; }
   .hero { align-items: flex-start; flex-direction: column; }
+  .alias-stats { grid-template-columns: repeat(3, 1fr); }
+  .alias-account { grid-column: 1 / -1; justify-self: start; }
+  .alias-search { width: 100%; }
+  .alias-card-head { flex-direction: column; }
 }
 </style>
