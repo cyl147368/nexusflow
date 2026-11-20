@@ -1148,12 +1148,12 @@ def get_integration_config() -> dict:
         "want_refresh_token": get_setting("nx_want_refresh_token", "1") in ("1", "true"),
         "want_2fa": get_setting("nx_want_2fa", "0") in ("1", "true"),
         "continuous": get_setting("nx_continuous", "1") in ("1", "true"),
-        "target_count": get_setting("nx_target_count", "0"),
-        "cool_down_seconds": get_setting("nx_cool_down_seconds", "30"),
+        "target_count": int(get_setting("nx_target_count", "0") or 0),
+        "cool_down_seconds": int(get_setting("nx_cool_down_seconds", "30") or 30),
         "auto_qualify": get_setting("nx_auto_qualify", "1") in ("1", "true"),
         "momo_proxy": get_setting("nx_momo_proxy", ""),
         "upi_proxy": get_setting("nx_upi_proxy", ""),
-        "payment_timeout": get_setting("nx_payment_timeout", "45"),
+        "payment_timeout": int(get_setting("nx_payment_timeout", "45") or 45),
     }
 
 
@@ -1197,8 +1197,8 @@ def save_integration_config(data: dict) -> None:
         "target_count", "cool_down_seconds", "momo_proxy", "upi_proxy",
         "payment_timeout",
     ):
-        if key in data:
-            set_setting(f"nx_{key}", str(data.get(key) or "").strip())
+        if key in data and data.get(key) is not None:
+            set_setting(f"nx_{key}", str(data.get(key)).strip())
     for key in ("mailhub_token", "icloud_token"):
         value = data.get(key)
         if value and value != "***":

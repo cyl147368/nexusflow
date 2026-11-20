@@ -54,6 +54,24 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(config["icloud_account_id"], "acc_test")
         self.assertEqual(config["mailhub_token"], "***")
 
+    def test_continuous_config_preserves_zero_values(self):
+        response = self.client.post(
+            "/api/integration/config",
+            json={
+                "continuous": True,
+                "target_count": 0,
+                "cool_down_seconds": 0,
+                "auto_qualify": False,
+                "payment_timeout": 30,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        config = response.json()["config"]
+        self.assertEqual(config["target_count"], 0)
+        self.assertEqual(config["cool_down_seconds"], 0)
+        self.assertFalse(config["auto_qualify"])
+        self.assertEqual(config["payment_timeout"], 30)
+
     def test_integration_page_is_served(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
