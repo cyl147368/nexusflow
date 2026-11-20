@@ -1,0 +1,87 @@
+name: Server Maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: inspect or stop-non-core
+        required: true
+        default: inspect
+        type: choice
+        options:
+          - inspect
+          - stop-non-core
+
+permissions:
+  contents: read
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install SSH client
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Inspect or clean server
+        env:
+          SSH_HOST: ${{ secrets.NEXUSFLOW_SSH_HOST }}
+          SSH_USER: ${{ secrets.NEXUSFLOW_SSH_USER }}
+          SSH_PASSWORD: ${{ secrets.NEXUSFLOW_SSH_PASSWORD }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=20 -o ServerAliveInterval=20 \
+            -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+            "${SSH_USER}@${SSH_HOST}" "ACTION='${ACTION}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          echo "===== DOCKER CONTAINERS ====="
+          docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          echo "===== CUSTOM SYSTEMD UNITS ====="
+          while read -r unit load active sub description; do
+            [ -n "${unit:-}" ] || continue
+            path="$(systemctl show "$unit" -p FragmentPath --value)"
+            case "$path" in
+              /etc/systemd/system/*) printf '%s\t%s\t%s\n' "$unit" "$active" "$description" ;;
+            esac
+          done < <(systemctl list-units --type=service --state=running --no-pager --no-legend)
+          echo "===== LISTENING PORTS ====="
+          ss -ltnp
+          echo "===== TOP PROCESSES ====="
+          ps -eo pid,ppid,user,comm,rss,args --sort=-rss | head -60
+          echo "===== INTERESTING PROCESSES ====="
+          ps -eo pid,ppid,user,comm,args | grep -E 'python|node|uvicorn|gunicorn|go/bin|screen|tmux|java|php' | grep -v grep || true
+
+          if [ "$ACTION" != "stop-non-core" ]; then
+            echo "Inspection only; nothing stopped."
+            exit 0
+          fi
+
+          echo "===== STOPPING NON-CORE DOCKER CONTAINERS ====="
+          while read -r name; do
+            [ -n "$name" ] || continue
+            case "$name" in
+              nexusflow-*|*sub2api*|*sub-*) echo "KEEP $name" ;;
+              *) echo "STOP $name"; docker stop "$name" ;;
+            esac
+          done < <(docker ps --format '{{.Names}}')
+
+          echo "===== STOPPING CUSTOM NON-CORE SYSTEMD SERVICES ====="
+          while read -r unit load active sub description; do
+            [ -n "${unit:-}" ] || continue
+            path="$(systemctl show "$unit" -p FragmentPath --value)"
+            case "$path" in /etc/systemd/system/*) ;; *) continue ;; esac
+            case "$unit" in
+              docker.service|containerd.service|ssh.service|sshd.service|cron.service|nginx.service) echo "KEEP $unit" ;;
+              *sub2api*|*nexusflow*|*icloud*|*mail-hub*|*payment-detector*) echo "KEEP $unit" ;;
+              *)
+                echo "STOP $unit"
+                systemctl stop "$unit"
+                systemctl disable "$unit" >/dev/null 2>&1 || true
+                ;;
+            esac
+          done < <(systemctl list-units --type=service --state=running --no-pager --no-legend)
+
+          echo "===== FINAL CONTAINERS ====="
+          docker ps -a --format '{{.Names}}\t{{.Status}}'
+          REMOTE
