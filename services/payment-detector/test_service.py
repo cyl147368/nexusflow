@@ -53,14 +53,18 @@ class PaymentDetectorTest(unittest.TestCase):
         headers = {"Authorization": "Bearer test-token"}
         health = self.client.get("/api/health", headers=headers)
         self.assertEqual(health.status_code, 200)
-        self.assertEqual(health.json()["registered_accounts"], 2)
+        self.assertEqual(health.json()["registered_accounts"], 1)
+        self.assertEqual(health.json()["total_records"], 2)
         self.assertEqual(health.json()["usable_accounts"], 1)
         candidates = self.client.get("/api/candidates", headers=headers)
         self.assertEqual(candidates.status_code, 200)
-        self.assertEqual(candidates.json()["total"], 2)
-        usable = {item["email"]: item["usable"] for item in candidates.json()["items"]}
-        self.assertTrue(usable["ok@example.com"])
-        self.assertFalse(usable["missing@example.com"])
+        self.assertEqual(candidates.json()["total"], 1)
+        self.assertEqual(candidates.json()["items"][0]["email"], "ok@example.com")
+        all_candidates = self.client.get(
+            "/api/candidates?include_incomplete=true",
+            headers=headers,
+        )
+        self.assertEqual(all_candidates.json()["total"], 2)
 
     def test_proxy_is_required(self):
         headers = {"Authorization": "Bearer test-token"}

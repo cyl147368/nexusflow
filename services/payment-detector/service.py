@@ -23,7 +23,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 VENDOR = Path("/app/vendor")
@@ -130,7 +130,7 @@ def _account_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _registered_rows() -> list[dict[str, Any]]:
+def _registered_rows(include_incomplete: bool = False) -> list[dict[str, Any]]:
     """Read the live WAL database through a private, writable snapshot.
 
     A Docker named volume mounted ``:ro`` can expose the main DB file but SQLite
@@ -151,12 +151,22 @@ def _registered_rows() -> list[dict[str, Any]]:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA query_only=ON")
         try:
-            return [
+            rows = [
                 dict(row)
                 for row in con.execute(
                     "SELECT email, access_token, session_token, cookie_header, device_id, "
                     "extra_json, created_at FROM registered ORDER BY created_at DESC"
                 ).fetchall()
+            ]
+            if include_incomplete:
+                return rows
+            return [
+                row for row in rows
+                if str(row.get("access_token") or "").strip()
+                and (
+                    str(row.get("cookie_header") or "").strip()
+                    or str(row.get("session_token") or "").strip()
+                )
             ]
         finally:
             con.close()
@@ -237,16 +247,8 @@ def startup() -> None:
 
 @app.get("/api/health")
 def health(_: None = Depends(_require_admin)):
+    all_rows = _registered_rows(include_incomplete=True)
     rows = _registered_rows()
-    usable = sum(
-        1
-        for row in rows
-        if str(row.get("access_token") or "").strip()
-        and (
-            str(row.get("cookie_header") or "").strip()
-            or str(row.get("session_token") or "").strip()
-        )
-    )
     node = shutil.which("node") or ""
     node_version = ""
     if node:
@@ -266,7 +268,8 @@ def health(_: None = Depends(_require_admin)):
         "ok": True,
         "service": "nexusflow-payment-detector",
         "registered_accounts": len(rows),
-        "usable_accounts": usable,
+        "total_records": len(all_rows),
+        "usable_accounts": len(rows),
         "main_db_exists": MAIN_DB.is_file(),
         "methods": sorted(ALLOWED_METHODS),
         "node": node_version,
@@ -275,10 +278,13 @@ def health(_: None = Depends(_require_admin)):
 
 
 @app.get("/api/candidates")
-def candidates(_: None = Depends(_require_admin)):
+def candidates(
+    include_incomplete: bool = Query(False),
+    _: None = Depends(_require_admin),
+):
     latest = _latest_results()
     out = []
-    for row in _registered_rows():
+    for row in _registered_rows(include_incomplete=include_incomplete):
         email = str(row["email"] or "").lower()
         has_access = bool(str(row["access_token"] or "").strip())
         has_session = bool(
