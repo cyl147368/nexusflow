@@ -1125,6 +1125,13 @@ class IntegrationConfigReq(BaseModel):
     icloud_url: Optional[str] = None
     icloud_token: Optional[str] = None
     icloud_account_id: Optional[str] = None
+    receiver_mode: Optional[str] = None
+    imap_host: Optional[str] = None
+    imap_port: Optional[int] = None
+    imap_email: Optional[str] = None
+    imap_password: Optional[str] = None
+    imap_folder: Optional[str] = None
+    imap_ssl: Optional[bool] = None
     proxy: Optional[str] = None
     otp_timeout: Optional[int] = None
     want_access_token: Optional[bool] = None
@@ -1194,6 +1201,14 @@ def api_integration_mailhub_info():
     try:
         return integration.mailhub_info()
     except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/test/receiver")
+def api_integration_test_receiver():
+    try:
+        return integration.test_receiver()
+    except (integration.IntegrationError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
 

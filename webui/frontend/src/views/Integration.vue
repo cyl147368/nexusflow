@@ -15,6 +15,7 @@ import {
   startIntegration,
   testICloud,
   testMailHub,
+  testReceiver,
 } from '@/api/integration'
 import { copyText, fmtTime } from '@/api/request'
 
@@ -42,6 +43,13 @@ const form = ref({
   icloud_url: 'http://icloud-prime:8081',
   icloud_token: '',
   icloud_account_id: '',
+  receiver_mode: 'icloud',
+  imap_host: '',
+  imap_port: 993,
+  imap_email: '',
+  imap_password: '',
+  imap_folder: 'INBOX',
+  imap_ssl: true,
   proxy: '',
   otp_timeout: 180,
   want_access_token: true,
@@ -181,6 +189,19 @@ async function runTest(target) {
       accounts.value = r.accounts || []
       ElMessage.success(r.message)
     }
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    testing.value = ''
+  }
+}
+
+async function testImapReceiver() {
+  testing.value = 'receiver'
+  try {
+    await save({ quiet: true })
+    const result = await testReceiver()
+    ElMessage.success(result.message || 'IMAP 收件箱连接正常')
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -376,7 +397,44 @@ startPolling()
             <el-input v-model="form.mailhub_token" type="password" show-password
               placeholder="已设置时留空不修改" />
           </el-form-item>
+          <el-form-item label="实际收件箱">
+            <el-radio-group v-model="form.receiver_mode">
+              <el-radio-button value="icloud">iCloud 主收件箱</el-radio-button>
+              <el-radio-button value="imap">外部 IMAP</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
         </el-form>
+        <div v-if="form.receiver_mode === 'imap'" class="receiver-form">
+          <el-form label-position="top">
+            <el-form-item label="IMAP 主机">
+              <el-input v-model="form.imap_host" placeholder="例如 imap.qq.com" />
+            </el-form-item>
+            <el-form-item label="端口">
+              <el-input-number v-model="form.imap_port" :min="1" :max="65535" />
+            </el-form-item>
+            <el-form-item label="实际收件邮箱">
+              <el-input v-model="form.imap_email" placeholder="例如 123456@qq.com" />
+            </el-form-item>
+            <el-form-item label="IMAP 授权码 / App 密码">
+              <el-input v-model="form.imap_password" type="password" show-password
+                placeholder="已设置时留空不修改" />
+            </el-form-item>
+            <el-form-item label="收件文件夹">
+              <el-input v-model="form.imap_folder" placeholder="INBOX" />
+            </el-form-item>
+            <el-form-item label="SSL">
+              <el-switch v-model="form.imap_ssl" active-text="993 SSL" inactive-text="明文端口" />
+            </el-form-item>
+          </el-form>
+          <div class="receiver-actions">
+            <el-button size="small" :loading="testing === 'receiver'" @click="testImapReceiver">
+              测试 IMAP 收件箱
+            </el-button>
+            <span class="hint">QQ/Gmail 需使用邮箱服务商生成的 IMAP 授权码，不是登录密码。</span>
+          </div>
+        </div>
+        <el-alert v-else type="info" :closable="false" show-icon
+          title="iCloud 主收件箱在下方“iCloud 接收邮箱”和“App 专用密码”中配置。" />
         <div class="mailhub-facts">
           <div>
             <span>SMTP 入站（备用）</span>
@@ -388,7 +446,7 @@ startPolling()
           </div>
           <div>
             <span>默认接收模式</span>
-            <b>iCloud Prime 主收件箱</b>
+            <b>{{ form.receiver_mode === 'imap' ? '外部 IMAP 收件箱' : 'iCloud Prime 主收件箱' }}</b>
           </div>
         </div>
         <el-alert type="info" :closable="false" show-icon>
@@ -679,6 +737,17 @@ code { color: var(--el-color-primary); }
   color: var(--el-text-color-primary); overflow-wrap: anywhere;
 }
 .mailhub-hint { margin-top: 10px; }
+.receiver-form {
+  padding: 14px; margin-bottom: 12px; border-radius: 10px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+}
+.receiver-form :deep(.el-form) {
+  display: grid; grid-template-columns: 1.35fr .7fr 1.2fr 1.2fr;
+  gap: 0 12px;
+}
+.receiver-form :deep(.el-form-item:nth-child(4)) { grid-column: span 2; }
+.receiver-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .alias-card {
   border: 1px solid var(--el-color-primary-light-8);
   background:
@@ -756,5 +825,7 @@ code { color: var(--el-color-primary); }
   .alias-search { width: 100%; }
   .alias-card-head { flex-direction: column; }
   .mailhub-facts { grid-template-columns: 1fr; }
+  .receiver-form :deep(.el-form) { grid-template-columns: 1fr 1fr; }
+  .receiver-form :deep(.el-form-item:nth-child(4)) { grid-column: auto; }
 }
 </style>

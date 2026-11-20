@@ -154,6 +154,29 @@ def mailhub_info(cfg: Optional[dict] = None) -> dict:
     return {"ok": True, "info": response}
 
 
+def test_receiver(cfg: Optional[dict] = None) -> dict:
+    cfg = cfg or db.get_integration_internal_config()
+    if (cfg.get("receiver_mode") or "icloud") != "imap":
+        return {"ok": True, "message": "当前使用 iCloud 主收件箱，无需测试 IMAP"}
+    if not cfg.get("imap_password"):
+        raise IntegrationError("请先填写 IMAP 授权码")
+    result = _request_json(
+        "POST",
+        _service_url(cfg["mailhub_url"], "/api/receiver/test"),
+        token=cfg["mailhub_token"],
+        payload={
+            "imap_host": cfg.get("imap_host") or "",
+            "imap_port": int(cfg.get("imap_port") or 993),
+            "imap_username": cfg.get("imap_email") or "",
+            "imap_password": cfg.get("imap_password") or "",
+            "imap_folder": cfg.get("imap_folder") or "INBOX",
+            "imap_ssl": bool(cfg.get("imap_ssl", True)),
+        },
+        timeout=30,
+    )
+    return {"ok": True, "message": result.get("message") or "IMAP 收件箱连接正常", "detail": result}
+
+
 def test_icloud(cfg: Optional[dict] = None) -> dict:
     cfg = cfg or db.get_integration_internal_config()
     response = _request_json(
@@ -358,10 +381,16 @@ def _run_pipeline(job_id: str) -> None:
             token=cfg["mailhub_token"],
             payload={
                 "email": email,
-                "source": "icloud-prime",
+                "source": "imap" if (cfg.get("receiver_mode") or "icloud") == "imap" else "icloud-prime",
                 "icloud_url": cfg["icloud_url"],
                 "icloud_token": cfg["icloud_token"],
                 "icloud_account_id": account_id,
+                "imap_host": cfg.get("imap_host") or "",
+                "imap_port": int(cfg.get("imap_port") or 993),
+                "imap_username": cfg.get("imap_email") or "",
+                "imap_password": cfg.get("imap_password") or "",
+                "imap_folder": cfg.get("imap_folder") or "INBOX",
+                "imap_ssl": bool(cfg.get("imap_ssl", True)),
                 "label": "NexusFlow",
             },
         ))

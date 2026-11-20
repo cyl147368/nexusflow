@@ -1051,6 +1051,13 @@ def get_integration_config() -> dict:
         ),
         "icloud_token": "***" if icloud_token else "",
         "icloud_account_id": get_setting("nx_icloud_account_id", ""),
+        "receiver_mode": get_setting("nx_receiver_mode", "icloud"),
+        "imap_host": get_setting("nx_imap_host", ""),
+        "imap_port": get_setting("nx_imap_port", "993"),
+        "imap_email": get_setting("nx_imap_email", ""),
+        "imap_password": "***" if get_setting("nx_imap_password") else "",
+        "imap_folder": get_setting("nx_imap_folder", "INBOX"),
+        "imap_ssl": get_setting("nx_imap_ssl", "1") in ("1", "true"),
         "proxy": get_setting("nx_proxy", ""),
         "otp_timeout": get_setting("nx_otp_timeout", "180"),
         "want_access_token": get_setting("nx_want_access_token", "1") in ("1", "true"),
@@ -1069,6 +1076,8 @@ def get_integration_internal_config() -> dict:
     cfg["icloud_token"] = (
         get_setting("nx_icloud_token") or os.getenv("ICLOUD_PRIME_API_TOKEN", "")
     )
+    cfg["imap_password"] = get_setting("nx_imap_password", "")
+    cfg["imap_ssl"] = get_setting("nx_imap_ssl", "1") in ("1", "true")
     cfg["otp_timeout"] = int(get_setting("nx_otp_timeout", "180") or 180)
     for key in ("want_access_token", "want_session_token", "want_refresh_token", "want_2fa"):
         cfg[key] = get_setting(f"nx_{key}", "0" if key == "want_2fa" else "1") in (
@@ -1080,7 +1089,8 @@ def get_integration_internal_config() -> dict:
 def save_integration_config(data: dict) -> None:
     """保存一体化配置；密钥传 '***' 或留空时保持原值。"""
     for key in (
-        "mailhub_url", "icloud_url", "icloud_account_id", "proxy", "otp_timeout",
+        "mailhub_url", "icloud_url", "icloud_account_id", "receiver_mode",
+        "imap_host", "imap_port", "imap_email", "imap_folder", "proxy", "otp_timeout",
     ):
         if key in data:
             set_setting(f"nx_{key}", str(data.get(key) or "").strip())
@@ -1088,6 +1098,14 @@ def save_integration_config(data: dict) -> None:
         value = data.get(key)
         if value and value != "***":
             set_setting(f"nx_{key}", str(value).strip())
+    if data.get("imap_password") and data["imap_password"] != "***":
+        set_setting("nx_imap_password", str(data["imap_password"]).strip())
+    if "imap_ssl" in data:
+        value = data["imap_ssl"]
+        enabled = value if isinstance(value, bool) else str(value).lower() in (
+            "1", "true", "yes", "on",
+        )
+        set_setting("nx_imap_ssl", "1" if enabled else "0")
     for key in ("want_access_token", "want_session_token", "want_refresh_token", "want_2fa"):
         if key in data:
             value = data[key]

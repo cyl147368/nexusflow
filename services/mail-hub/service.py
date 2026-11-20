@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import imaplib
 import html
 import json
 import os
@@ -22,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -61,6 +63,12 @@ def init_db() -> None:
                 icloud_url      TEXT,
                 icloud_token    TEXT,
                 icloud_account  TEXT,
+                imap_host       TEXT,
+                imap_port       INTEGER,
+                imap_username   TEXT,
+                imap_password   TEXT,
+                imap_folder     TEXT,
+                imap_ssl        INTEGER DEFAULT 1,
                 created_at      REAL NOT NULL
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_email_source
@@ -77,6 +85,17 @@ def init_db() -> None:
             );
             """
         )
+        columns = {row["name"] for row in con.execute("PRAGMA table_info(mailboxes)")}
+        for name, ddl in (
+            ("imap_host", "ALTER TABLE mailboxes ADD COLUMN imap_host TEXT"),
+            ("imap_port", "ALTER TABLE mailboxes ADD COLUMN imap_port INTEGER"),
+            ("imap_username", "ALTER TABLE mailboxes ADD COLUMN imap_username TEXT"),
+            ("imap_password", "ALTER TABLE mailboxes ADD COLUMN imap_password TEXT"),
+            ("imap_folder", "ALTER TABLE mailboxes ADD COLUMN imap_folder TEXT"),
+            ("imap_ssl", "ALTER TABLE mailboxes ADD COLUMN imap_ssl INTEGER DEFAULT 1"),
+        ):
+            if name not in columns:
+                con.execute(ddl)
 
 
 def require_admin(authorization: str = Header(default="")) -> None:
@@ -166,13 +185,100 @@ def _refresh_icloud(mailbox: dict) -> None:
         _store_message(mailbox["token"], f"icloud:{uid}", sender, recipient, subject, body)
 
 
+def _connect_imap(imap_host: str, imap_port: int, username: str, password: str, use_ssl: bool):
+    if not imap_host or not username or not password:
+        raise RuntimeError("IMAP 主机、收件邮箱和授权码必填")
+    client = (
+        imaplib.IMAP4_SSL(imap_host, int(imap_port or 993), timeout=20)
+        if use_ssl
+        else imaplib.IMAP4(imap_host, int(imap_port or 143), timeout=20)
+    )
+    client.login(username, password)
+    return client
+
+
+def _imap_body(message) -> str:
+    plain = ""
+    html_body = ""
+    parts = message.walk() if message.is_multipart() else (message,)
+    for part in parts:
+        content_type = part.get_content_type()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        try:
+            content = part.get_content()
+        except Exception:
+            payload = part.get_payload(decode=True)
+            content = payload.decode(part.get_content_charset() or "utf-8", errors="replace") if payload else ""
+        if content_type == "text/plain" and not plain:
+            plain = str(content)
+        elif content_type == "text/html" and not html_body:
+            html_body = str(content)
+    return plain or html_body
+
+
+def _refresh_imap(mailbox: dict) -> None:
+    if mailbox.get("source") != "imap":
+        return
+    client = _connect_imap(
+        str(mailbox.get("imap_host") or ""),
+        int(mailbox.get("imap_port") or 993),
+        str(mailbox.get("imap_username") or ""),
+        str(mailbox.get("imap_password") or ""),
+        bool(mailbox.get("imap_ssl", 1)),
+    )
+    try:
+        status, _ = client.select(str(mailbox.get("imap_folder") or "INBOX"), readonly=True)
+        if status != "OK":
+            raise RuntimeError("无法打开 IMAP 收件文件夹")
+        since = (datetime.utcnow() - timedelta(days=7)).strftime("%d-%b-%Y")
+        status, data = client.search(None, "SINCE", since)
+        if status != "OK":
+            raise RuntimeError("IMAP 搜索邮件失败")
+        ids = data[0].split()[-100:]
+        target = str(mailbox["email"]).lower()
+        for message_id in reversed(ids):
+            status, fetched = client.fetch(message_id, "(RFC822)")
+            if status != "OK":
+                continue
+            raw = next(
+                (item[1] for item in fetched if isinstance(item, tuple) and len(item) > 1),
+                b"",
+            )
+            if not raw:
+                continue
+            message = email.message_from_bytes(raw, policy=email.policy.default)
+            recipient = str(message.get("To") or "")
+            if target not in recipient.lower():
+                continue
+            sender = str(message.get("From") or "")
+            subject = str(message.get("Subject") or "")
+            fingerprint = str(message.get("Message-ID") or f"imap:{mailbox['token']}:{message_id.decode()}")
+            _store_message(
+                mailbox["token"],
+                f"imap:{fingerprint}",
+                sender,
+                recipient,
+                subject,
+                _imap_body(message),
+            )
+    finally:
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+
 def _messages_for(token: str, refresh: bool = True) -> list[dict]:
     mailbox = _get_mailbox(token)
     if not mailbox:
         raise HTTPException(404, "邮箱不存在")
-    if refresh and mailbox.get("source") == "icloud-prime":
+    if refresh and mailbox.get("source") in {"icloud-prime", "imap"}:
         try:
-            _refresh_icloud(mailbox)
+            if mailbox.get("source") == "imap":
+                _refresh_imap(mailbox)
+            else:
+                _refresh_icloud(mailbox)
         except Exception:
             # 上一批缓存仍可用于读取；上游恢复后下一次请求会继续同步。
             pass
@@ -186,6 +292,21 @@ class MailboxReq(BaseModel):
     icloud_url: str = ""
     icloud_token: str = ""
     icloud_account_id: str = ""
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_username: str = ""
+    imap_password: str = ""
+    imap_folder: str = "INBOX"
+    imap_ssl: bool = True
+
+
+class ReceiverTestReq(BaseModel):
+    imap_host: str
+    imap_port: int = 993
+    imap_username: str
+    imap_password: str
+    imap_folder: str = "INBOX"
+    imap_ssl: bool = True
 
 
 @app.get("/api/health")
@@ -217,20 +338,29 @@ def create_mailbox(req: MailboxReq, _: None = Depends(require_admin)):
         token = row["token"] if row else secrets.token_urlsafe(24)
         if row:
             con.execute(
-                "UPDATE mailboxes SET label=?,icloud_url=?,icloud_token=?,icloud_account=? WHERE token=?",
+                "UPDATE mailboxes SET label=?,icloud_url=?,icloud_token=?,icloud_account=?,"
+                "imap_host=?,imap_port=?,imap_username=?,imap_password=?,imap_folder=?,imap_ssl=?"
+                " WHERE token=?",
                 (
                     req.label,
                     req.icloud_url.rstrip("/"),
                     req.icloud_token,
                     req.icloud_account_id,
+                    req.imap_host,
+                    req.imap_port,
+                    req.imap_username,
+                    req.imap_password,
+                    req.imap_folder,
+                    1 if req.imap_ssl else 0,
                     token,
                 ),
             )
         else:
             con.execute(
                 "INSERT INTO mailboxes"
-                "(token,email,source,label,icloud_url,icloud_token,icloud_account,created_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                "(token,email,source,label,icloud_url,icloud_token,icloud_account,"
+                "imap_host,imap_port,imap_username,imap_password,imap_folder,imap_ssl,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     token,
                     email_addr,
@@ -239,6 +369,12 @@ def create_mailbox(req: MailboxReq, _: None = Depends(require_admin)):
                     req.icloud_url.rstrip("/"),
                     req.icloud_token,
                     req.icloud_account_id,
+                    req.imap_host,
+                    req.imap_port,
+                    req.imap_username,
+                    req.imap_password,
+                    req.imap_folder,
+                    1 if req.imap_ssl else 0,
                     time.time(),
                 ),
             )
@@ -247,6 +383,33 @@ def create_mailbox(req: MailboxReq, _: None = Depends(require_admin)):
         "email": email_addr,
         "token": token,
         "relay_url": f"{PUBLIC_URL}/mail/{token}",
+    }
+
+
+@app.post("/api/receiver/test")
+def test_receiver(req: ReceiverTestReq, _: None = Depends(require_admin)):
+    try:
+        client = _connect_imap(
+            req.imap_host,
+            req.imap_port,
+            req.imap_username,
+            req.imap_password,
+            req.imap_ssl,
+        )
+        try:
+            status, _ = client.select(req.imap_folder or "INBOX", readonly=True)
+            if status != "OK":
+                raise RuntimeError("无法打开收件文件夹")
+        finally:
+            client.logout()
+    except Exception as exc:
+        raise HTTPException(400, f"IMAP 连接失败: {exc}") from exc
+    return {
+        "ok": True,
+        "message": "IMAP 收件箱连接正常",
+        "imap_host": req.imap_host,
+        "imap_username": req.imap_username,
+        "imap_folder": req.imap_folder,
     }
 
 

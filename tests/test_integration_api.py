@@ -77,6 +77,25 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["text"], "a=1; b=2=3")
 
+    def test_imap_password_is_masked_and_preserved(self):
+        saved = self.client.post(
+            "/api/integration/config",
+            json={
+                "receiver_mode": "imap",
+                "imap_host": "imap.example.com",
+                "imap_port": 993,
+                "imap_email": "receiver@example.com",
+                "imap_password": "authorization-code",
+                "imap_folder": "INBOX",
+                "imap_ssl": True,
+            },
+        )
+        self.assertEqual(saved.status_code, 200)
+        config = self.client.get("/api/integration/config").json()["config"]
+        self.assertEqual(config["receiver_mode"], "imap")
+        self.assertEqual(config["imap_password"], "***")
+        self.assertTrue(config["imap_ssl"])
+
 
 if __name__ == "__main__":
     unittest.main()
