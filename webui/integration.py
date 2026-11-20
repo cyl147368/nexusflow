@@ -405,6 +405,22 @@ def _internal_relay_url(mailhub_url: str, mailbox: dict) -> str:
     )
 
 
+def _reusable_icloud_alias() -> Optional[dict]:
+    """Pick a recent, unused pool row when iCloud's hourly create quota is full."""
+    for item in db.list_accounts(status="available", limit=50, kind="icloud_relay"):
+        email = str(item.get("email") or "").strip().lower()
+        if not email:
+            continue
+        registered = db.get_registered(email)
+        if registered and any(
+            str(registered.get(key) or "").strip()
+            for key in ("access_token", "session_token", "refresh_token")
+        ):
+            continue
+        return item
+    return None
+
+
 def _preflight_registration_network(proxy: str) -> None:
     """Verify ChatGPT connectivity and oai-did before creating a hidden alias."""
     from http_client import create_http_session
@@ -620,13 +636,31 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
         _log(f"已找回重启前创建的隐藏邮箱：{created.get('email')}")
     else:
         _log("正在通过 iCloud Prime 创建隐藏邮箱")
-        created = _data(_request_json(
-            "POST",
-            _service_url(cfg["icloud_url"], "/api/create"),
-            token=cfg["icloud_token"],
-            payload={"account_id": account_id, "label": alias_label},
-            timeout=90,
-        ))
+        try:
+            created = _data(_request_json(
+                "POST",
+                _service_url(cfg["icloud_url"], "/api/create"),
+                token=cfg["icloud_token"],
+                payload={"account_id": account_id, "label": alias_label},
+                timeout=90,
+            ))
+        except IntegrationError as exc:
+            message = str(exc)
+            if "429" not in message and "额度" not in message:
+                raise
+            fallback = _reusable_icloud_alias()
+            if not fallback:
+                raise IntegrationError(
+                    "iCloud 本小时创建额度已满，且邮箱池没有可复用的隐藏邮箱"
+                ) from exc
+            created = {
+                "email": fallback["email"],
+                "active": True,
+                "reused": True,
+            }
+            _log(
+                f"iCloud 创建额度已满，复用池内隐藏邮箱：{fallback['email']}"
+            )
     email = (created.get("email") or "").strip().lower()
     if not email:
         raise IntegrationError("iCloud 创建成功但没有返回邮箱地址")

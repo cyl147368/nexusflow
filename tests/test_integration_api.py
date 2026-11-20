@@ -270,6 +270,28 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertFalse(run_cycle.call_args.kwargs["resuming"])
         self.assertEqual(integration.get_job()["status"], "done")
 
+    def test_reusable_alias_skips_accounts_with_complete_credentials(self):
+        from webui import integration
+
+        accounts = [
+            {"email": "complete@example.com"},
+            {"email": "reusable@example.com"},
+        ]
+        with (
+            patch.object(integration.db, "list_accounts", return_value=accounts),
+            patch.object(
+                integration.db,
+                "get_registered",
+                side_effect=[
+                    {"access_token": "token"},
+                    {},
+                ],
+            ),
+        ):
+            selected = integration._reusable_icloud_alias()
+
+        self.assertEqual(selected["email"], "reusable@example.com")
+
 
 if __name__ == "__main__":
     unittest.main()
