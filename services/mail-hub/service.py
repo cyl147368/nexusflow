@@ -107,7 +107,22 @@ def require_admin(authorization: str = Header(default="")) -> None:
 
 
 def _extract_otp(text: str) -> str:
-    for match in _otp_re.findall(text or ""):
+    source = str(text or "")
+    if "<" in source and ">" in source:
+        source = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", source)
+        source = re.sub(r"(?s)<[^>]+>", " ", source)
+        source = html.unescape(source)
+    source = re.sub(r"\s+", " ", source)
+    labelled = re.search(
+        r"(?:verifizierungscode|bestätigungscode|verification\s+code|"
+        r"einmalcode|security\s+code|your\s+code|验证码|驗證碼)"
+        r"[^0-9]{0,180}(\d{6})(?!\d)",
+        source,
+        re.IGNORECASE,
+    )
+    if labelled and labelled.group(1) not in {"123456", "000000"}:
+        return labelled.group(1)
+    for match in _otp_re.findall(source):
         if match not in {"123456", "000000"}:
             return match
     return ""

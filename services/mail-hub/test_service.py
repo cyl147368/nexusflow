@@ -91,6 +91,16 @@ class MailHubApiTest(unittest.TestCase):
             ["INBOX", "&V4NXPpCuTvY-"],
         )
 
+    def test_otp_extraction_prefers_visible_labelled_code(self):
+        from service import _extract_otp
+
+        body = (
+            '<a href="https://track.example/open?upn=202123">help</a>'
+            "<p>Gib diesen temporären Verifizierungscode ein:</p>"
+            "<p>699389</p>"
+        )
+        self.assertEqual(_extract_otp(body), "699389")
+
 
 if __name__ == "__main__":
     unittest.main()
