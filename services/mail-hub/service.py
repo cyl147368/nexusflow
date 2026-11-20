@@ -234,6 +234,33 @@ def _message_recipients(message) -> str:
     return " ".join(values)
 
 
+def _imap_scan_folders(client, configured: str) -> list[str]:
+    """Return the inbox plus every server-advertised Junk/Spam folder."""
+    folders = [configured or "INBOX"]
+    try:
+        status, rows = client.list()
+    except Exception:
+        return folders
+    if status != "OK":
+        return folders
+    for raw in rows:
+        if not isinstance(raw, bytes):
+            continue
+        lowered = raw.lower()
+        if not any(
+            marker in lowered
+            for marker in (b"\\junk", b"\\spam", b'"junk"', b'"spam"', b"garbage")
+        ):
+            continue
+        match = re.search(rb'"([^"]+)"\s*$', raw)
+        if not match:
+            continue
+        name = match.group(1).decode("ascii", errors="ignore")
+        if name and name not in folders:
+            folders.append(name)
+    return folders
+
+
 def _refresh_imap(mailbox: dict) -> dict:
     if mailbox.get("source") != "imap":
         return {"ok": True, "source": mailbox.get("source"), "matched": 0, "scanned": 0}
@@ -246,75 +273,90 @@ def _refresh_imap(mailbox: dict) -> dict:
         bool(mailbox.get("imap_ssl", 1)),
     )
     try:
-        status, _ = client.select(str(mailbox.get("imap_folder") or "INBOX"), readonly=True)
-        if status != "OK":
-            raise RuntimeError("无法打开 IMAP 收件文件夹")
-        since = (datetime.utcnow() - timedelta(days=7)).strftime("%d-%b-%Y")
-        status, data = client.search(None, "SINCE", since)
-        if status != "OK":
-            raise RuntimeError("IMAP 搜索邮件失败")
-        ids = data[0].split()[-100:]
+        folders = _imap_scan_folders(
+            client,
+            str(mailbox.get("imap_folder") or "INBOX"),
+        )
         target = str(mailbox["email"]).lower()
         matched = 0
+        scanned = 0
         unmatched_samples = []
-        for message_id in reversed(ids):
-            # Fetch headers first. QQ/IMAP can be slow enough that downloading
-            # 100 full messages on every 3-second OTP poll consumed the entire
-            # 180-second verification window before the new message was seen.
-            header_fields = (
-                "From To Cc Delivered-To X-Original-To Envelope-To "
-                "X-Forwarded-To Subject Message-ID Date"
-            )
-            status, fetched = client.fetch(
-                message_id,
-                f"(BODY.PEEK[HEADER.FIELDS ({header_fields})])",
-            )
+        for folder in folders:
+            try:
+                status, _ = client.select(folder, readonly=True)
+            except Exception:
+                continue
             if status != "OK":
                 continue
-            raw = next(
-                (item[1] for item in fetched if isinstance(item, tuple) and len(item) > 1),
-                b"",
-            )
-            if not raw:
-                continue
-            headers = email.message_from_bytes(raw, policy=email.policy.default)
-            recipient = _message_recipients(headers)
-            if target not in recipient.lower():
-                if len(unmatched_samples) < 20:
-                    unmatched_samples.append({
-                        "to": str(headers.get("To") or ""),
-                        "delivered_to": str(headers.get("Delivered-To") or ""),
-                        "x_original_to": str(headers.get("X-Original-To") or ""),
-                        "from": str(headers.get("From") or ""),
-                        "subject": str(headers.get("Subject") or ""),
-                    })
-                continue
-            status, fetched = client.fetch(message_id, "(RFC822)")
+            since = (datetime.utcnow() - timedelta(days=7)).strftime("%d-%b-%Y")
+            status, data = client.search(None, "SINCE", since)
             if status != "OK":
                 continue
-            raw = next(
-                (item[1] for item in fetched if isinstance(item, tuple) and len(item) > 1),
-                b"",
-            )
-            if not raw:
-                continue
-            message = email.message_from_bytes(raw, policy=email.policy.default)
-            sender = str(message.get("From") or "")
-            subject = str(message.get("Subject") or "")
-            fingerprint = str(message.get("Message-ID") or f"imap:{mailbox['token']}:{message_id.decode()}")
-            _store_message(
-                mailbox["token"],
-                f"imap:{fingerprint}",
-                sender,
-                recipient,
-                subject,
-                _imap_body(message),
-            )
-            matched += 1
+            ids = data[0].split()[-100:]
+            scanned += len(ids)
+            for message_id in reversed(ids):
+                # Fetch headers first. QQ/IMAP can be slow enough that
+                # downloading full messages on every OTP poll consumed the
+                # whole verification window before the new mail was seen.
+                header_fields = (
+                    "From To Cc Delivered-To X-Original-To Envelope-To "
+                    "X-Forwarded-To Subject Message-ID Date"
+                )
+                status, fetched = client.fetch(
+                    message_id,
+                    f"(BODY.PEEK[HEADER.FIELDS ({header_fields})])",
+                )
+                if status != "OK":
+                    continue
+                raw = next(
+                    (item[1] for item in fetched if isinstance(item, tuple) and len(item) > 1),
+                    b"",
+                )
+                if not raw:
+                    continue
+                headers = email.message_from_bytes(raw, policy=email.policy.default)
+                recipient = _message_recipients(headers)
+                if target not in recipient.lower():
+                    if len(unmatched_samples) < 20:
+                        unmatched_samples.append({
+                            "folder": folder,
+                            "to": str(headers.get("To") or ""),
+                            "delivered_to": str(headers.get("Delivered-To") or ""),
+                            "x_original_to": str(headers.get("X-Original-To") or ""),
+                            "from": str(headers.get("From") or ""),
+                            "subject": str(headers.get("Subject") or ""),
+                        })
+                    continue
+                status, fetched = client.fetch(message_id, "(RFC822)")
+                if status != "OK":
+                    continue
+                raw = next(
+                    (item[1] for item in fetched if isinstance(item, tuple) and len(item) > 1),
+                    b"",
+                )
+                if not raw:
+                    continue
+                message = email.message_from_bytes(raw, policy=email.policy.default)
+                sender = str(message.get("From") or "")
+                subject = str(message.get("Subject") or "")
+                fingerprint = str(
+                    message.get("Message-ID")
+                    or f"imap:{mailbox['token']}:{folder}:{message_id.decode()}"
+                )
+                _store_message(
+                    mailbox["token"],
+                    f"imap:{fingerprint}",
+                    sender,
+                    recipient,
+                    subject,
+                    _imap_body(message),
+                )
+                matched += 1
         return {
             "ok": True,
             "source": "imap",
-            "scanned": len(ids),
+            "folders": folders,
+            "scanned": scanned,
             "matched": matched,
             "unmatched_samples": unmatched_samples,
             "duration_ms": round((time.monotonic() - started_at) * 1000),

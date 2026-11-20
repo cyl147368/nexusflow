@@ -75,6 +75,22 @@ class MailHubApiTest(unittest.TestCase):
         )
         self.assertIn("hidden.alias@icloud.com", _message_recipients(message))
 
+    def test_junk_folder_is_included_in_imap_scan(self):
+        from service import _imap_scan_folders
+
+        class FakeImap:
+            def list(self):
+                return "OK", [
+                    b'(\\HasNoChildren) "/" "INBOX"',
+                    b'(\\HasNoChildren \\Junk) "/" "&V4NXPpCuTvY-"',
+                    b'(\\HasNoChildren) "/" "Sent"',
+                ]
+
+        self.assertEqual(
+            _imap_scan_folders(FakeImap(), "INBOX"),
+            ["INBOX", "&V4NXPpCuTvY-"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
