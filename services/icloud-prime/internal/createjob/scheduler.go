@@ -17,9 +17,10 @@ const hourlyLimit = 5
 var ErrHourlyQuotaExceeded = errors.New("当前小时创建额度已用完")
 
 type Config struct {
-	StorePath string
-	Creator   AliasCreator
-	Now       func() time.Time
+	StorePath   string
+	Creator     AliasCreator
+	Now         func() time.Time
+	HourlyLimit int
 }
 
 type Scheduler struct {
@@ -44,7 +45,11 @@ func NewScheduler(cfg Config) (*Scheduler, error) {
 	if err != nil {
 		return nil, err
 	}
-	limiter := NewLimiter(hourlyLimit)
+	limit := cfg.HourlyLimit
+	if limit == 0 {
+		limit = hourlyLimit
+	}
+	limiter := NewLimiter(limit)
 	limiter.Restore(state.Quota, now())
 	s := &Scheduler{
 		store:   store,
@@ -360,7 +365,11 @@ func (s *Scheduler) runJob(ctx context.Context, id string, at time.Time) {
 					return
 				}
 				job.LastError = err.Error()
-				job.NextRunAt = timePtr(nextHour(at))
+				if isOfficialRateLimitError(err) {
+					job.NextRunAt = timePtr(at.Add(15 * time.Second))
+				} else {
+					job.NextRunAt = timePtr(nextHour(at))
+				}
 			})
 			return
 		}
@@ -477,7 +486,10 @@ func (s *Scheduler) normalizeLoadedJob(job *Job) {
 
 func (s *Scheduler) nextAutomaticRun(at time.Time, accountID string) time.Time {
 	remainingQuota := s.limiter.Remaining(accountID, at)
-	if remainingQuota <= 0 {
+	if remainingQuota < 0 {
+		return at.Add(time.Minute)
+	}
+	if remainingQuota == 0 {
 		return nextHour(at)
 	}
 	hourEnd := nextHour(at)
@@ -541,6 +553,16 @@ func isTransientCreateError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isOfficialRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "reached the limit of addresses") ||
+		strings.Contains(msg, "limit of addresses you can create") ||
+		strings.Contains(msg, "地址创建上限")
 }
 
 func validClock(value string) bool {

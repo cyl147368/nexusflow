@@ -517,6 +517,33 @@ func TestJobBacksOffAfterHTTP421WithoutStopping(t *testing.T) {
 	}
 }
 
+func TestOfficialAddressLimitRetriesAfterFifteenSeconds(t *testing.T) {
+	now := time.Date(2026, 8, 9, 10, 0, 0, 0, time.Local)
+	creator := &fakeCreator{
+		fail: errors.New("You have reached the limit of addresses you can create right now"),
+	}
+	s := newTestScheduler(t, creator, now)
+
+	job, err := s.UpsertJob(JobRequest{AccountID: "acc_1", Mode: ModeDuration, DurationHours: 1})
+	if err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	if err := s.RunDue(context.Background()); err != nil {
+		t.Fatalf("run due failed: %v", err)
+	}
+	updated, ok := s.GetJob(job.ID)
+	if !ok {
+		t.Fatal("job missing")
+	}
+	expected := now.Add(15 * time.Second)
+	if updated.NextRunAt == nil || !updated.NextRunAt.Equal(expected) {
+		t.Fatalf("expected official limit retry at %v, got %v", expected, updated.NextRunAt)
+	}
+	if updated.Status != StatusRunning {
+		t.Fatalf("expected job to remain running, got %s", updated.Status)
+	}
+}
+
 func TestAutomaticJobPacesNextRunAcrossRemainingHourlyQuota(t *testing.T) {
 	now := time.Date(2026, 8, 9, 10, 0, 0, 0, time.Local)
 	s := newTestScheduler(t, &fakeCreator{}, now)

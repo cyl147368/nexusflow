@@ -18,7 +18,7 @@ type QuotaState struct {
 }
 
 func NewLimiter(limit int) *Limiter {
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 5
 	}
 	return &Limiter{
@@ -32,6 +32,9 @@ func (l *Limiter) Restore(state QuotaState, now time.Time) {
 	defer l.mu.Unlock()
 
 	l.buckets = make(map[string]int, len(state.Buckets))
+	if l.limit < 0 {
+		return
+	}
 	for key, used := range state.Buckets {
 		if used <= 0 {
 			continue
@@ -52,6 +55,9 @@ func (l *Limiter) Snapshot(now time.Time) QuotaState {
 	defer l.mu.Unlock()
 
 	currentHour := now.Local().Truncate(time.Hour)
+	if l.limit < 0 {
+		return QuotaState{Buckets: map[string]int{}}
+	}
 	buckets := make(map[string]int, len(l.buckets))
 	for key, used := range l.buckets {
 		if used <= 0 {
@@ -70,6 +76,9 @@ func (l *Limiter) Remaining(accountID string, at time.Time) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.limit < 0 {
+		return -1
+	}
 	used := l.buckets[limitKey(accountID, at)]
 	remaining := l.limit - used
 	if remaining < 0 {
@@ -86,6 +95,9 @@ func (l *Limiter) TryReserve(accountID string, at time.Time, count int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.limit < 0 {
+		return true
+	}
 	key := limitKey(accountID, at)
 	if l.buckets[key]+count > l.limit {
 		return false
@@ -106,6 +118,9 @@ func (l *Limiter) Release(accountID string, at time.Time, count int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.limit < 0 {
+		return
+	}
 	key := limitKey(accountID, at)
 	l.buckets[key] -= count
 	if l.buckets[key] <= 0 {

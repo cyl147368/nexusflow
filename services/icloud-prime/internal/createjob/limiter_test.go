@@ -41,3 +41,17 @@ func TestLimiterResetsOnNextHour(t *testing.T) {
 		t.Fatalf("expected quota reset next hour, got %d", got)
 	}
 }
+
+func TestLimiterCanRunWithoutLocalHourlyCap(t *testing.T) {
+	limiter := NewLimiter(-1)
+	now := time.Date(2026, 8, 9, 10, 30, 0, 0, time.Local)
+
+	for i := 0; i < 50; i++ {
+		if ok := limiter.TryReserve("acc_1", now, 1); !ok {
+			t.Fatalf("unlimited reservation %d failed", i+1)
+		}
+	}
+	if got := limiter.Remaining("acc_1", now); got != -1 {
+		t.Fatalf("expected unlimited sentinel -1, got %d", got)
+	}
+}

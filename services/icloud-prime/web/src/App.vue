@@ -977,7 +977,11 @@ onMounted(async () => {
           <h2>{{ pageTitle }}</h2>
           <p>{{ pageSubtitle }}</p>
         </div>
-        <span class="quota-pill">本小时可创建 <strong>{{ remainingThisHour }}</strong> / 5</span>
+        <span class="quota-pill">
+          {{ remainingThisHour < 0 ? "创建额度" : "本小时可创建" }}
+          <strong>{{ remainingThisHour < 0 ? "不限制" : remainingThisHour }}</strong>
+          <template v-if="remainingThisHour >= 0"> / 5</template>
+        </span>
       </section>
 
       <section v-if="activeTab === 'account'" class="account-view">
@@ -1376,8 +1380,8 @@ onMounted(async () => {
             <span>额度</span>
           </div>
           <div class="quota-large">
-            <strong>{{ remainingThisHour }}</strong>
-            <span>本小时剩余</span>
+            <strong>{{ remainingThisHour < 0 ? "不限制" : remainingThisHour }}</strong>
+            <span>{{ remainingThisHour < 0 ? "仅受 Apple 实时限制" : "本小时剩余" }}</span>
           </div>
         </article>
       </section>

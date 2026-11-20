@@ -405,22 +405,6 @@ def _internal_relay_url(mailhub_url: str, mailbox: dict) -> str:
     )
 
 
-def _reusable_icloud_alias() -> Optional[dict]:
-    """Pick a recent, unused pool row when iCloud's hourly create quota is full."""
-    for item in db.list_accounts(status="available", limit=50, kind="icloud_relay"):
-        email = str(item.get("email") or "").strip().lower()
-        if not email:
-            continue
-        registered = db.get_registered(email)
-        # Any registered row means this alias was already submitted to OpenAI,
-        # including a password-only partial row. Reusing it tends to recreate
-        # the same invalid_state / stale-OTP loop.
-        if registered:
-            continue
-        return item
-    return None
-
-
 def _is_quota_wait_error(message: str) -> bool:
     text = str(message or "").lower()
     return any(
@@ -662,19 +646,9 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             message = str(exc)
             if not _is_quota_wait_error(message):
                 raise
-            fallback = _reusable_icloud_alias()
-            if not fallback:
-                raise IntegrationError(
-                    "iCloud 本小时创建额度已满，且邮箱池没有可复用的隐藏邮箱"
-                ) from exc
-            created = {
-                "email": fallback["email"],
-                "active": True,
-                "reused": True,
-            }
-            _log(
-                f"iCloud 创建额度已满，复用池内隐藏邮箱：{fallback['email']}"
-            )
+            raise IntegrationError(
+                "Apple 暂时限制隐藏邮箱创建额度，15 秒后自动重试"
+            ) from exc
     email = (created.get("email") or "").strip().lower()
     if not email:
         raise IntegrationError("iCloud 创建成功但没有返回邮箱地址")
@@ -903,7 +877,7 @@ def _run_pipeline(job_id: str) -> None:
             if result.get("ok"):
                 delay = base_delay
             elif str(result.get("category") or "") == "quota":
-                delay = min(900, max(300, base_delay))
+                delay = 15
             else:
                 delay = min(900, max(base_delay, 15) * min(8, 1 + int(
                     get_job().get("consecutive_failures") or 1

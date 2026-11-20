@@ -270,30 +270,6 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertFalse(run_cycle.call_args.kwargs["resuming"])
         self.assertEqual(integration.get_job()["status"], "done")
 
-    def test_reusable_alias_skips_any_previously_attempted_account(self):
-        from webui import integration
-
-        accounts = [
-            {"email": "complete@example.com"},
-            {"email": "partial@example.com"},
-            {"email": "reusable@example.com"},
-        ]
-        with (
-            patch.object(integration.db, "list_accounts", return_value=accounts),
-            patch.object(
-                integration.db,
-                "get_registered",
-                side_effect=[
-                    {"access_token": "token"},
-                    {"password": "partial-password"},
-                    {},
-                ],
-            ),
-        ):
-            selected = integration._reusable_icloud_alias()
-
-        self.assertEqual(selected["email"], "reusable@example.com")
-
     def test_icloud_address_limit_is_classified_as_quota_wait(self):
         from webui import integration
 
@@ -301,6 +277,9 @@ class IntegrationApiTest(unittest.TestCase):
             "HTTP 502: You have reached the limit of addresses you can create"
         ))
         self.assertTrue(integration._is_quota_wait_error("当前小时创建额度已用完"))
+        self.assertTrue(integration._is_quota_wait_error(
+            "Apple 暂时限制隐藏邮箱创建额度，15 秒后自动重试"
+        ))
         self.assertFalse(integration._is_quota_wait_error("warmup failed"))
 
 

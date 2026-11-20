@@ -67,8 +67,9 @@ func New(mgr *account.Manager, debug bool, dataDir ...string) *Server {
 		dir = dataDir[0]
 	}
 	scheduler, err := createjob.NewScheduler(createjob.Config{
-		StorePath: filepath.Join(dir, "create_jobs.json"),
-		Creator:   hmeAliasCreator{mgr: mgr},
+		StorePath:   filepath.Join(dir, "create_jobs.json"),
+		Creator:     hmeAliasCreator{mgr: mgr},
+		HourlyLimit: -1,
 	})
 	if err != nil {
 		panic(err)
