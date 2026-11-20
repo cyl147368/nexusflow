@@ -77,7 +77,6 @@ jobs:
               *)
                 echo "STOP $unit"
                 systemctl stop "$unit"
-                systemctl disable "$unit" >/dev/null 2>&1 || true
                 ;;
             esac
           done < <(systemctl list-units --type=service --state=running --no-pager --no-legend)
