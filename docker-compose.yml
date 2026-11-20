@@ -10,6 +10,8 @@ services:
         condition: service_started
       mail-hub:
         condition: service_started
+      payment-detector:
+        condition: service_started
     ports:
       - "${NEXUSFLOW_BIND:-0.0.0.0}:${NEXUSFLOW_PORT:-8770}:8765"
     environment:
@@ -19,6 +21,8 @@ services:
       ICLOUD_INTERNAL_URL: "http://icloud-prime:8081"
       MAILHUB_ADMIN_TOKEN: "${MAILHUB_ADMIN_TOKEN:?required}"
       ICLOUD_PRIME_API_TOKEN: "${ICLOUD_PRIME_API_TOKEN:?required}"
+      PAYMENT_DETECTOR_URL: "http://payment-detector:8091"
+      PAYMENT_DETECTOR_TOKEN: "${PAYMENT_DETECTOR_TOKEN:?required}"
     volumes:
       - nexusflow-runtime:/app/runtime
     networks: [nexusflow]
@@ -53,6 +57,22 @@ services:
       - mail-hub-data:/app/data
     networks: [nexusflow]
 
+  payment-detector:
+    build:
+      context: ./services/payment-detector
+    restart: unless-stopped
+    environment:
+      PAYMENT_DETECTOR_TOKEN: "${PAYMENT_DETECTOR_TOKEN:?required}"
+      NEXUSFLOW_DB_PATH: "/app/data/webui.db"
+      PAYMENT_RESULTS_DB: "/app/results/payment-results.db"
+      GPT_REGISTER_CONFIG_DIR: "/app/config"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - nexusflow-runtime:/app/data:ro
+      - payment-results:/app/results
+    expose: ["8091"]
+    networks: [nexusflow]
+
 networks:
   nexusflow:
 
@@ -60,3 +80,4 @@ volumes:
   nexusflow-runtime:
   icloud-prime-data:
   mail-hub-data:
+  payment-results:

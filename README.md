@@ -22,6 +22,7 @@ iCloud Hide My Email 创建/删除能力，并内置邮件中转服务。
 | `nexusflow` | 主 WebUI、邮箱池、注册引擎、统一编排 | 对外 `8770` |
 | `icloud-prime` | iCloud 账号、隐藏邮箱创建/删除、iCloud 收件读取 | 仅 Docker 内网 |
 | `mail-hub` | 邮箱登记、统一 `relay_url`、iCloud 代理取件、SMTP catch-all | 对外 `8090` / `2525` |
+| `payment-detector` | 只读主数据库的 MoMo/UPI 支付资格检测 | 仅 Docker 内网 |
 
 所有持久数据都放在 Docker named volumes 中。`.env` 内有自动生成的
 WebUI Basic Auth 密码、邮件服务 Token 和 iCloud Token，权限为 `600`，
@@ -102,6 +103,21 @@ App 专用密码用于读取 iCloud 收件箱。Cookie 用于管理 Hide My Emai
 
 主项目原有的「邮箱列表」「注册结果」「运行记录」「代理池」
 「接码配置」「自动导出」页面全部保留。
+
+### 4. MoMo / UPI 资格检测
+
+进入「数据 / 支付资格」可以直接读取主项目 `registered` 表中的账号。
+
+检测服务会：
+
+1. 验证账号 AT 与 Cookie。
+2. 按 MoMo（Vietnam）或 UPI（India）创建 Checkout。
+3. 调用 Stripe init 读取支付方式与金额。
+4. 在 payment method 创建、Confirm、Approve 之前停止。
+5. 将结果写入独立 `payment-results` 数据卷，不修改主数据库。
+
+MoMo 和 UPI 分别需要越南、印度地区出口代理。服务器上已保留完整 Python
+支付核心、Node.js Sentinel 与 Playwright Chromium；Windows WPF 部分未集成。
 
 ## 本地开发
 

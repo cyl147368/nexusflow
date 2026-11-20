@@ -60,6 +60,12 @@ const routes = [
     meta: { title: '运行记录', icon: 'Document', group: '数据' },
   },
   {
+    path: '/payment-qualification',
+    name: 'payment-qualification',
+    component: () => import('@/views/PaymentQualification.vue'),
+    meta: { title: '支付资格', icon: 'Wallet', group: '数据' },
+  },
+  {
     path: '/settings/mail',
     name: 'mail',
     component: () => import('@/views/MailConfig.vue'),

@@ -32,6 +32,16 @@ EOF
   echo "[NexusFlow] Created .env with generated secrets."
 fi
 
+ensure_env() {
+  local key="$1"
+  local value="$2"
+  if ! grep -q "^${key}=" .env; then
+    printf '%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+
+ensure_env PAYMENT_DETECTOR_TOKEN "$(openssl rand -hex 32)"
+
 docker compose pull --ignore-buildable || true
 docker compose build
 docker compose up -d

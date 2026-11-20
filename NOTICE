@@ -8,5 +8,11 @@ NexusFlow includes and adapts the following upstream projects:
    Copyright and attribution: https://github.com/forever94yu/icloud-prime
    License: MIT (see services/icloud-prime/LICENSE)
 
+3. GPT-Register-Tool
+   Copyright and attribution: https://github.com/2951461586/GPT-Register-Tool
+   License: MIT (see services/payment-detector/vendor/LICENSE.GPT-Register-Tool)
+   NexusFlow vendors the Python payment core for read-only MoMo/UPI
+   qualification probes and excludes the Windows WPF desktop shell.
+
 The original upstream license files and notices are preserved. NexusFlow's
 combined distribution is provided under the AGPL-3.0 terms of the main project.

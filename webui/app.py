@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from . import db, export_formats, integration, registrar  # noqa: E402
+from . import db, export_formats, integration, payment_detector, registrar  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
 from .exporter import _decode_jwt_payload, _get_auth  # noqa: E402
 from mail_providers import (  # noqa: E402
@@ -1151,6 +1151,15 @@ class ICloudAliasDeleteReq(BaseModel):
     anonymous_id: str
 
 
+class PaymentCheckReq(BaseModel):
+    emails: list[str] = Field(default_factory=list)
+    methods: list[str] = Field(default_factory=lambda: ["momo", "upi"])
+    proxies: dict[str, str] = Field(default_factory=dict)
+    countries: dict[str, str] = Field(default_factory=dict)
+    timeout: int = Field(45, ge=10, le=180)
+    workers: int = Field(2, ge=1, le=8)
+
+
 @app.get("/api/integration/config")
 def api_integration_config():
     return {"ok": True, "config": db.get_integration_config(), "job": integration.get_job()}
@@ -1221,6 +1230,49 @@ def api_integration_start():
 @app.get("/api/integration/status")
 def api_integration_status():
     return {"ok": True, "job": integration.get_job(), "stats": db.stats()}
+
+
+# ──────────────────────── MoMo / UPI 支付资格检测 ────────────────────────
+
+
+@app.get("/api/payment/health")
+def api_payment_health():
+    try:
+        return payment_detector.health()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/payment/candidates")
+def api_payment_candidates():
+    try:
+        return payment_detector.candidates()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/payment/results")
+def api_payment_results():
+    try:
+        return payment_detector.results()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/payment/check")
+def api_payment_check(req: PaymentCheckReq):
+    try:
+        return payment_detector.start_check(req.model_dump())
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/payment/runs/{run_id}")
+def api_payment_run(run_id: str):
+    try:
+        return payment_detector.run(run_id)
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ──────────────────────── 静态资源 ────────────────────────
