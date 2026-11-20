@@ -103,6 +103,15 @@ const activeAliasCount = computed(
 const inactiveAliasCount = computed(
   () => aliases.value.filter((item) => item.active === false).length,
 )
+const smtpPublicAddress = computed(() => {
+  if (!mailHubInfo.value.public_url || !mailHubInfo.value.smtp_port) return '启动后显示'
+  try {
+    const url = new URL(mailHubInfo.value.public_url)
+    return `${url.hostname}:${mailHubInfo.value.smtp_port}`
+  } catch (_) {
+    return `${mailHubInfo.value.public_url}:${mailHubInfo.value.smtp_port}`
+  }
+})
 
 function aliasId(alias) {
   return alias?.anonymousId || alias?.anonymous_id || alias?.id || ''
@@ -370,8 +379,8 @@ startPolling()
         </el-form>
         <div class="mailhub-facts">
           <div>
-            <span>SMTP 入站</span>
-            <b>{{ mailHubInfo.smtp_enabled ? `0.0.0.0:${mailHubInfo.smtp_port}` : '启动后显示' }}</b>
+            <span>SMTP 入站（备用）</span>
+            <b>{{ mailHubInfo.smtp_enabled ? smtpPublicAddress : '启动后显示' }}</b>
           </div>
           <div>
             <span>Mail Hub 对外地址</span>
@@ -384,7 +393,7 @@ startPolling()
         </div>
         <el-alert type="info" :closable="false" show-icon>
           <template #title>
-            SMTP 是内建进站服务，不需要单独的登录用户名和密码。实际接收 OTP 的邮箱在下方 iCloud 账号中配置。
+            SMTP 是内建备用进站服务，不需要登录用户名和密码。当前 iCloud 流程直接读取下方配置的 iCloud 主收件箱。
           </template>
         </el-alert>
         <div class="hint mailhub-hint">
