@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -23,6 +24,71 @@ _job: Optional[dict] = None
 
 class IntegrationError(RuntimeError):
     pass
+
+
+def normalize_cookie_input(raw: str) -> dict:
+    """Accept Cookie JSON, a Cookie header, or a copied browser cURL command.
+
+    DevTools can copy a request as cURL with one click, but its Cookie header is
+    embedded in a long command. Accepting that shape avoids asking operators to
+    manually locate and edit the header while preserving HttpOnly values, which
+    ``document.cookie`` cannot see.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise IntegrationError("Cookie 内容为空")
+
+    cookies: dict[str, str] = {}
+    if text.startswith("{") or text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise IntegrationError(f"Cookie JSON 格式错误: {exc}") from exc
+        if isinstance(parsed, dict):
+            cookies = {str(k): str(v) for k, v in parsed.items() if str(k).strip()}
+        elif isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict) and item.get("name") is not None:
+                    cookies[str(item["name"])] = str(item.get("value", ""))
+        else:
+            raise IntegrationError("Cookie JSON 必须是对象或浏览器导出的数组")
+    else:
+        header = _cookie_header_from_text(text)
+        for part in header.split(";"):
+            key, sep, value = part.strip().partition("=")
+            if sep and key.strip():
+                cookies[key.strip()] = value.strip().strip('"')
+
+    if not cookies:
+        raise IntegrationError("没有从输入中识别到 Cookie")
+    header = "; ".join(f"{key}={value}" for key, value in cookies.items())
+    return {
+        "text": header,
+        "cookie_names": list(cookies),
+        "count": len(cookies),
+    }
+
+
+def _cookie_header_from_text(text: str) -> str:
+    """Extract a Cookie header from cURL/network dump or return raw header text."""
+    normalized = text.replace("\\\r\n", " ").replace("\\\n", " ")
+    patterns = (
+        # curl: -H 'Cookie: a=b; c=d' or --header "Cookie: ..."
+        r"(?is)(?:-H|--header)\s+(['\"])\s*cookie\s*:\s*(.*?)\1",
+        # curl: -b 'a=b; c=d'
+        r"(?is)(?:-b|--cookie)\s+(['\"])(.*?)\1",
+        # copied request headers: Cookie: a=b; c=d
+        r"(?im)^\s*cookie\s*:\s*(.+?)\s*$",
+        # raw header value
+        r"(?is)^\s*cookie\s*:\s*(.+)\s*$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            if match.lastindex == 1:
+                return match.group(1).strip()
+            return match.group(2).strip()
+    return normalized
 
 
 def _service_url(base: str, path: str) -> str:
@@ -105,16 +171,9 @@ def create_or_update_icloud_account(payload: dict) -> dict:
 
     if account_id:
         if cookies:
-            parsed = {}
-            if cookies.startswith("{"):
-                parsed = json.loads(cookies)
-            elif "=" in cookies:
-                for part in cookies.split(";"):
-                    if "=" in part:
-                        key, value = part.split("=", 1)
-                        parsed[key.strip()] = value.strip()
-            if not parsed:
-                raise IntegrationError("Cookie 格式无法解析")
+            normalized = normalize_cookie_input(cookies)
+            cookies = normalized["text"]
+            parsed = dict(part.strip().split("=", 1) for part in cookies.split(";"))
             _data(_request_json(
                 "PUT",
                 _service_url(cfg["icloud_url"], f"/api/accounts/{account_id}/cookies"),
@@ -130,6 +189,8 @@ def create_or_update_icloud_account(payload: dict) -> dict:
                 timeout=90,
             ))
     else:
+        if cookies:
+            cookies = normalize_cookie_input(cookies)["text"]
         created = _data(_request_json(
             "POST",
             _service_url(cfg["icloud_url"], "/api/accounts"),

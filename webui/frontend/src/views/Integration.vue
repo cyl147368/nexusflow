@@ -8,6 +8,7 @@ import {
   getIntegrationStatus,
   listICloudAliases,
   listICloudAccounts,
+  normalizeCookie,
   saveIntegrationConfig,
   startIntegration,
   testICloud,
@@ -153,6 +154,19 @@ async function setupAccount() {
     ElMessage.error(e.message)
   } finally {
     setupBusy.value = false
+  }
+}
+
+async function normalizeAccountCookie() {
+  if (!accountForm.value.cookies.trim()) {
+    return ElMessage.warning('请先粘贴 Cookie、Cookie JSON 或 DevTools cURL')
+  }
+  try {
+    const r = await normalizeCookie(accountForm.value.cookies)
+    accountForm.value.cookies = r.text
+    ElMessage.success(`已识别 ${r.count} 个 Cookie，其中包含登录凭证`)
+  } catch (e) {
+    ElMessage.error(e.message)
   }
 }
 
@@ -313,9 +327,13 @@ startPolling()
           </el-form-item>
           <el-form-item label="账号 Cookie">
             <el-input v-model="accountForm.cookies" type="textarea" :rows="4"
-              placeholder="推荐。可粘贴 name=value; name=value 或 Cookie JSON" />
+              placeholder="可直接粘贴 DevTools Copy as cURL、Cookie Header 或 Cookie JSON" />
           </el-form-item>
         </el-form>
+        <div class="cookie-actions">
+          <el-button text type="primary" @click="normalizeAccountCookie">识别并整理 Cookie</el-button>
+          <span class="hint">DevTools → Network → 右键请求 → Copy → Copy as cURL，然后直接粘贴。</span>
+        </div>
       </el-card>
 
       <el-card shadow="never" class="config-card wide">
@@ -428,6 +446,7 @@ startPolling()
   border-radius: 12px; background: var(--el-bg-color); box-shadow: var(--el-box-shadow-light);
 }
 .hint { color: var(--el-text-color-secondary); font-size: 13px; }
+.cookie-actions { display: flex; align-items: center; gap: 12px; margin-top: -6px; }
 code { color: var(--el-color-primary); }
 @media (max-width: 900px) {
   .grid { grid-template-columns: 1fr; }

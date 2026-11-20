@@ -1160,6 +1160,10 @@ class PaymentCheckReq(BaseModel):
     workers: int = Field(2, ge=1, le=8)
 
 
+class CookieNormalizeReq(BaseModel):
+    text: str
+
+
 @app.get("/api/integration/config")
 def api_integration_config():
     return {"ok": True, "config": db.get_integration_config(), "job": integration.get_job()}
@@ -1200,6 +1204,14 @@ def api_integration_icloud_account(req: ICloudAccountReq):
     try:
         return integration.create_or_update_icloud_account(req.model_dump(exclude_none=True))
     except (integration.IntegrationError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/cookies/normalize")
+def api_integration_cookies_normalize(req: CookieNormalizeReq):
+    try:
+        return {"ok": True, **integration.normalize_cookie_input(req.text)}
+    except integration.IntegrationError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 

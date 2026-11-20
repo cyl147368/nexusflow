@@ -51,6 +51,32 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("NexusFlow", response.text)
 
+    def test_cookie_normalize_accepts_curl(self):
+        response = self.client.post(
+            "/api/integration/cookies/normalize",
+            json={
+                "text": (
+                    "curl 'https://www.icloud.com/' "
+                    "-H 'Cookie: X-APPLE-WEBAUTH-TOKEN=abc; "
+                    "X-APPLE-WEBAUTH-USER=v%3D1%3Ad%3D42' "
+                    "-H 'User-Agent: browser'"
+                )
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 2)
+        self.assertIn("X-APPLE-WEBAUTH-TOKEN=abc", body["text"])
+        self.assertEqual(body["cookie_names"], ["X-APPLE-WEBAUTH-TOKEN", "X-APPLE-WEBAUTH-USER"])
+
+    def test_cookie_normalize_accepts_json(self):
+        response = self.client.post(
+            "/api/integration/cookies/normalize",
+            json={"text": '{"a":"1","b":"2=3"}'},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text"], "a=1; b=2=3")
+
 
 if __name__ == "__main__":
     unittest.main()
