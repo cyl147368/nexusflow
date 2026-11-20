@@ -83,6 +83,12 @@ const routes = [
     component: () => import('@/views/ExportConfig.vue'),
     meta: { title: '自动导出', icon: 'Share', group: '配置' },
   },
+  {
+    path: '/system-update',
+    name: 'system-update',
+    component: () => import('@/views/SystemUpdate.vue'),
+    meta: { title: '系统更新', icon: 'Refresh', group: '配置' },
+  },
 ]
 
 const router = createRouter({

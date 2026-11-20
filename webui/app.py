@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from . import db, export_formats, integration, payment_detector, registrar  # noqa: E402
+from . import db, export_formats, integration, payment_detector, registrar, system_update  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
 from .exporter import _decode_jwt_payload, _get_auth  # noqa: E402
 from mail_providers import (  # noqa: E402
@@ -57,6 +57,12 @@ logger = logging.getLogger("webui")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
+
+
+@app.on_event("startup")
+def resume_integration_job():
+    """Resume unfinished one-click jobs from SQLite after a container restart."""
+    integration.resume_pending()
 
 
 @app.middleware("http")
@@ -1177,6 +1183,30 @@ class CookieNormalizeReq(BaseModel):
     text: str
 
 
+class ProxyPoolReq(BaseModel):
+    items: list[str]
+
+
+class ProxyPoolDeleteReq(BaseModel):
+    proxy: str
+
+
+@app.get("/api/proxy/pool")
+def api_proxy_pool_list():
+    return {"ok": True, "items": db.list_proxy_pool()}
+
+
+@app.put("/api/proxy/pool")
+def api_proxy_pool_replace(req: ProxyPoolReq):
+    return {"ok": True, "items": db.replace_proxy_pool(req.items)}
+
+
+@app.post("/api/proxy/pool/delete")
+def api_proxy_pool_delete(req: ProxyPoolDeleteReq):
+    deleted = db.delete_proxy(req.proxy)
+    return {"ok": True, "deleted": deleted, "items": db.list_proxy_pool()}
+
+
 @app.get("/api/integration/config")
 def api_integration_config():
     return {"ok": True, "config": db.get_integration_config(), "job": integration.get_job()}
@@ -1322,6 +1352,33 @@ def api_payment_check(req: PaymentCheckReq):
 def api_payment_run(run_id: str):
     try:
         return payment_detector.run(run_id)
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+# ──────────────────────── GitHub 更新 ────────────────────────
+
+
+@app.get("/api/system/update/check")
+def api_system_update_check():
+    try:
+        return system_update.check()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/system/update/apply")
+def api_system_update_apply():
+    try:
+        return system_update.apply()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/system/update/status")
+def api_system_update_status():
+    try:
+        return system_update.status()
     except integration.IntegrationError as exc:
         raise HTTPException(400, str(exc)) from exc
 

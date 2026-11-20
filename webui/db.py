@@ -72,6 +72,12 @@ def init_db():
             value   TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS proxy_pool (
+            proxy       TEXT PRIMARY KEY,
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS registered (
             email           TEXT PRIMARY KEY,
             password        TEXT,
@@ -97,6 +103,13 @@ def init_db():
             log_path        TEXT,
             error           TEXT,
             error_category  TEXT         -- network / account / unknown
+        );
+
+        CREATE TABLE IF NOT EXISTS integration_jobs (
+            job_id       TEXT PRIMARY KEY,
+            status       TEXT NOT NULL,
+            updated_at   REAL NOT NULL,
+            payload_json TEXT NOT NULL
         );
     """)
     con.commit()
@@ -945,6 +958,40 @@ def list_runs(limit: int = 50) -> list[dict]:
     return [dict(r) for r in cur.fetchall()]
 
 
+def save_integration_job(job: dict) -> None:
+    job_id = str(job.get("id") or "").strip()
+    if not job_id:
+        return
+    with _lock, closing(_conn()) as con:
+        con.execute(
+            "INSERT INTO integration_jobs(job_id,status,updated_at,payload_json)"
+            " VALUES (?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET"
+            " status=excluded.status,updated_at=excluded.updated_at,"
+            "payload_json=excluded.payload_json",
+            (
+                job_id,
+                str(job.get("status") or "idle"),
+                float(job.get("updated_at") or time.time()),
+                json.dumps(job, ensure_ascii=False),
+            ),
+        )
+        con.commit()
+
+
+def get_latest_integration_job() -> Optional[dict]:
+    with closing(_conn()) as con:
+        row = con.execute(
+            "SELECT payload_json FROM integration_jobs"
+            " ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["payload_json"])
+    except Exception:
+        return None
+
+
 # ──────────────────────── settings (KV) ────────────────────────
 
 
@@ -953,6 +1000,36 @@ def get_setting(key: str, default: str = "") -> str:
         cur = con.execute("SELECT value FROM settings WHERE key=?", (key,))
         row = cur.fetchone()
         return row["value"] if row else default
+
+
+def list_proxy_pool() -> list[str]:
+    with closing(_conn()) as con:
+        return [
+            row["proxy"]
+            for row in con.execute(
+                "SELECT proxy FROM proxy_pool ORDER BY created_at ASC"
+            ).fetchall()
+        ]
+
+
+def replace_proxy_pool(items: list[str]) -> list[str]:
+    now = time.time()
+    cleaned = list(dict.fromkeys(str(item).strip() for item in items if str(item).strip()))
+    with _lock, closing(_conn()) as con:
+        con.execute("DELETE FROM proxy_pool")
+        con.executemany(
+            "INSERT INTO proxy_pool(proxy, created_at, updated_at) VALUES (?, ?, ?)",
+            [(proxy, now + index / 1000, now) for index, proxy in enumerate(cleaned)],
+        )
+        con.commit()
+    return cleaned
+
+
+def delete_proxy(proxy: str) -> bool:
+    with _lock, closing(_conn()) as con:
+        rc = con.execute("DELETE FROM proxy_pool WHERE proxy=?", (proxy,))
+        con.commit()
+        return rc.rowcount > 0
 
 
 def set_setting(key: str, value) -> None:

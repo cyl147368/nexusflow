@@ -14,6 +14,7 @@ on:
           - start-cache-forge
           - start-cache-forge-public
           - start-independent-proxy
+          - set-admin-password
 
 permissions:
   contents: read
@@ -31,6 +32,7 @@ jobs:
           SSH_HOST: ${{ secrets.NEXUSFLOW_SSH_HOST }}
           SSH_USER: ${{ secrets.NEXUSFLOW_SSH_USER }}
           SSH_PASSWORD: ${{ secrets.NEXUSFLOW_SSH_PASSWORD }}
+          ADMIN_PASSWORD: ${{ secrets.NEXUSFLOW_ADMIN_PASSWORD }}
           ACTION: ${{ inputs.action }}
         run: |
           sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
@@ -76,6 +78,15 @@ jobs:
             systemctl start independent-proxy.service
             systemctl --no-pager --full status independent-proxy.service || true
             ss -ltnp
+            exit 0
+          fi
+
+          if [ "$ACTION" = "set-admin-password" ]; then
+            test -n "${ADMIN_PASSWORD:-}"
+            cd /opt/nexusflow
+            sed -i "s|^NEXUSFLOW_BASIC_PASSWORD=.*|NEXUSFLOW_BASIC_PASSWORD=${ADMIN_PASSWORD}|" .env
+            docker compose up -d --force-recreate nexusflow
+            echo "Admin password updated and nexusflow recreated."
             exit 0
           fi
 

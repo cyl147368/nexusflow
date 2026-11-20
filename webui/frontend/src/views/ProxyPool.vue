@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProxyStore, isValidProxy, proxyScheme } from '@/stores/proxy'
@@ -43,23 +43,31 @@ async function testAll() {
   finally { testingAll.value = false }
 }
 
-function save() {
+async function save() {
   if (!draft.value.trim()) { ElMessage.warning('请先粘贴代理'); return }
-  const r = proxyStore.setFromText(draft.value)
-  draft.value = ''
-  ElMessage.success(`已保存 ${r.kept} 个代理${r.duplicated ? `（去重 ${r.duplicated} 个）` : ''}`)
+  try {
+    const r = await proxyStore.setFromText(draft.value)
+    draft.value = ''
+    ElMessage.success(`已保存 ${r.kept} 个代理${r.duplicated ? `（去重 ${r.duplicated} 个）` : ''}`)
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
 }
-function append() {
+async function append() {
   if (!draft.value.trim()) { ElMessage.warning('请先粘贴代理'); return }
-  const r = proxyStore.append(draft.value)
-  draft.value = ''
-  ElMessage.success(`已追加 ${r.added} 个新代理`)
+  try {
+    const r = await proxyStore.append(draft.value)
+    draft.value = ''
+    ElMessage.success(`已追加 ${r.added} 个新代理`)
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
 }
 async function clearAll() {
   if (!count.value) return
   try {
     await ElMessageBox.confirm(`确定清空全部 ${count.value} 个代理？`, '确认', { type: 'warning', confirmButtonText: '确定', cancelButtonText: '取消' })
-    proxyStore.clear()
+    await proxyStore.clear()
     ElMessage.success('已清空')
   } catch (_) { /* cancel */ }
 }
@@ -67,6 +75,7 @@ function editInDraft() {
   draft.value = proxyStore.text
   ElMessage.info('已把当前代理池载入编辑框，改完点「覆盖保存」')
 }
+onActivated(() => proxyStore.load(true).catch(() => {}))
 </script>
 
 <template>

@@ -12,6 +12,8 @@ services:
         condition: service_started
       payment-detector:
         condition: service_started
+      updater:
+        condition: service_started
     ports:
       - "${NEXUSFLOW_BIND:-0.0.0.0}:${NEXUSFLOW_PORT:-8770}:8765"
     environment:
@@ -23,6 +25,8 @@ services:
       ICLOUD_PRIME_API_TOKEN: "${ICLOUD_PRIME_API_TOKEN:?required}"
       PAYMENT_DETECTOR_URL: "http://payment-detector:8091"
       PAYMENT_DETECTOR_TOKEN: "${PAYMENT_DETECTOR_TOKEN:?required}"
+      NEXUSFLOW_UPDATER_URL: "http://updater:8092"
+      NEXUSFLOW_UPDATER_TOKEN: "${NEXUSFLOW_UPDATER_TOKEN:?required}"
     volumes:
       - nexusflow-runtime:/app/runtime
     networks: [nexusflow]
@@ -73,6 +77,21 @@ services:
     expose: ["8091"]
     networks: [nexusflow]
 
+  updater:
+    build:
+      context: ./services/updater
+    restart: unless-stopped
+    environment:
+      NEXUSFLOW_UPDATER_TOKEN: "${NEXUSFLOW_UPDATER_TOKEN:?required}"
+      UPDATER_REPO_PATH: "/opt/nexusflow"
+      UPDATER_BRANCH: "main"
+    volumes:
+      - "${NEXUSFLOW_REPO_PATH:-/opt/nexusflow}:/opt/nexusflow"
+      - /var/run/docker.sock:/var/run/docker.sock
+      - updater-state:/app/state
+    expose: ["8092"]
+    networks: [nexusflow]
+
 networks:
   nexusflow:
 
@@ -81,3 +100,4 @@ volumes:
   icloud-prime-data:
   mail-hub-data:
   payment-results:
+  updater-state:

@@ -84,6 +84,7 @@ const statusType = computed(() => ({
 
 const stageLabel = computed(() => ({
   idle: '等待启动',
+  resuming: '恢复上次任务',
   starting: '准备中',
   preflighting: '检查注册网络与代理',
   creating_alias: '创建 iCloud 隐藏邮箱',
@@ -152,6 +153,7 @@ function configPayload() {
 async function load() {
   loading.value = true
   try {
+    await proxyStore.load()
     const r = await getIntegrationConfig()
     const cfg = r.config || {}
     form.value = { ...form.value, ...cfg }

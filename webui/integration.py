@@ -20,6 +20,7 @@ from . import db, registrar
 
 _job_lock = threading.Lock()
 _job: Optional[dict] = None
+_resume_started = False
 
 
 class IntegrationError(RuntimeError):
@@ -333,16 +334,19 @@ def _set_job(**updates) -> dict:
             _job = {}
         _job.update(updates)
         _job["updated_at"] = time.time()
-        return json.loads(json.dumps(_job, ensure_ascii=False))
+        snapshot = json.loads(json.dumps(_job, ensure_ascii=False))
+        db.save_integration_job(snapshot)
+        return snapshot
 
 
 def get_job() -> dict:
+    global _job
     with _job_lock:
-        return json.loads(json.dumps(_job, ensure_ascii=False)) if _job else {
-            "status": "idle",
-            "stage": "idle",
-            "logs": [],
-        }
+        if _job is None:
+            _job = db.get_latest_integration_job()
+        if _job:
+            return json.loads(json.dumps(_job, ensure_ascii=False))
+        return {"status": "idle", "stage": "idle", "logs": []}
 
 
 def _log(message: str) -> None:
@@ -402,23 +406,44 @@ def _run_pipeline(job_id: str) -> None:
         if not account_id:
             raise IntegrationError("请先在第二步配置 iCloud 账号 ID")
 
-        _set_job(status="running", stage="preflighting", started_at=time.time(), error="")
-        _log(f"正在检查注册网络与代理：{_redact_proxy(cfg.get('proxy') or '')}")
-        _preflight_registration_network(cfg.get("proxy") or "")
-        _set_job(stage="creating_alias")
-        _log("正在通过 iCloud Prime 创建隐藏邮箱")
-        created = _data(_request_json(
-            "POST",
-            _service_url(cfg["icloud_url"], "/api/create"),
-            token=cfg["icloud_token"],
-            payload={"account_id": account_id, "label": "NexusFlow"},
-            timeout=90,
-        ))
-        email = (created.get("email") or "").strip().lower()
+        job = get_job()
+        resuming = bool(job.get("_resume"))
+        email = str(job.get("email") or "").strip().lower()
+        if resuming:
+            _log(f"检测到未完成任务，从阶段 {job.get('stage') or 'unknown'} 恢复")
+
         if not email:
-            raise IntegrationError("iCloud 创建成功但没有返回邮箱地址")
-        _set_job(stage="registering_mailbox", email=email, alias=created)
-        _log(f"隐藏邮箱已创建：{email}")
+            _set_job(status="running", stage="preflighting", error="")
+            _log(f"正在检查注册网络与代理：{_redact_proxy(cfg.get('proxy') or '')}")
+            _preflight_registration_network(cfg.get("proxy") or "")
+            _set_job(stage="creating_alias")
+            alias_label = f"NexusFlow {job_id}"
+            created = None
+            if resuming:
+                try:
+                    existing = list_icloud_aliases(account_id).get("aliases") or []
+                    created = next(
+                        (item for item in existing if item.get("label") == alias_label),
+                        None,
+                    )
+                except Exception as exc:
+                    _log(f"恢复时查询已有隐藏邮箱失败，将重新创建：{exc}")
+            if created:
+                _log(f"已找回重启前创建的隐藏邮箱：{created.get('email')}")
+            else:
+                _log("正在通过 iCloud Prime 创建隐藏邮箱")
+                created = _data(_request_json(
+                    "POST",
+                    _service_url(cfg["icloud_url"], "/api/create"),
+                    token=cfg["icloud_token"],
+                    payload={"account_id": account_id, "label": alias_label},
+                    timeout=90,
+                ))
+            email = (created.get("email") or "").strip().lower()
+            if not email:
+                raise IntegrationError("iCloud 创建成功但没有返回邮箱地址")
+            _set_job(stage="registering_mailbox", email=email, alias=created)
+            _log(f"隐藏邮箱已创建：{email}")
 
         _log("正在邮件中转服务登记邮箱并生成取件链接")
         mailbox = _data(_request_json(
@@ -448,6 +473,30 @@ def _run_pipeline(job_id: str) -> None:
 
         db.import_accounts(f"{email}----{relay_url}", kind="icloud_relay")
         db.set_setting("mail_source", "icloud_relay")
+        if resuming:
+            completed = db.get_registered(email)
+            if completed and any(
+                str(completed.get(key) or "").strip()
+                for key in ("access_token", "session_token", "refresh_token")
+            ):
+                _set_job(
+                    status="done",
+                    stage="completed",
+                    finished_at=time.time(),
+                    message="服务重启前注册已完成",
+                )
+                _log("检测到该邮箱已有完整凭证，恢复任务直接完成")
+                return
+            previous_run_id = str(job.get("run_id") or "").strip()
+            if previous_run_id:
+                db.finish_run(
+                    previous_run_id,
+                    "failed",
+                    "服务重启，旧进程终止，任务重新调度",
+                    category="network",
+                )
+            db.reset_to_available(email)
+            _log("已释放重启前占用中的邮箱，准备重新启动注册")
         account = db.claim_account(email)
         if not account:
             raise IntegrationError("邮箱已写入号池，但当前无法 claim（可能已使用中或已完成）")
@@ -524,6 +573,7 @@ def start_pipeline() -> dict:
         id=job_id,
         status="running",
         stage="starting",
+        _resume=False,
         started_at=time.time(),
         finished_at=None,
         error="",
@@ -538,3 +588,34 @@ def start_pipeline() -> dict:
     )
     thread.start()
     return get_job()
+
+
+def resume_pending() -> Optional[str]:
+    """Resume a persisted running integration job after process restart."""
+    global _job, _resume_started
+    if _resume_started:
+        return None
+    persisted = db.get_latest_integration_job()
+    if not persisted or persisted.get("status") != "running":
+        _resume_started = True
+        return None
+    job_id = str(persisted.get("id") or "").strip()
+    if not job_id:
+        _resume_started = True
+        return None
+    with _job_lock:
+        _job = dict(persisted)
+        _job["_resume"] = True
+        _job["stage"] = "resuming"
+        _job["updated_at"] = time.time()
+    db.save_integration_job(_job)
+    _log(f"服务启动：发现未完成任务 {job_id}，自动恢复")
+    thread = threading.Thread(
+        target=_run_pipeline,
+        args=(job_id,),
+        daemon=True,
+        name=f"nexusflow-resume-{job_id}",
+    )
+    thread.start()
+    _resume_started = True
+    return job_id

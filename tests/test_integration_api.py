@@ -96,6 +96,38 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(config["imap_password"], "***")
         self.assertTrue(config["imap_ssl"])
 
+    def test_proxy_pool_is_persisted_in_database(self):
+        replace = self.client.put(
+            "/api/proxy/pool",
+            json={"items": ["socks5://one:pass@127.0.0.1:1080", "http://two:8080"]},
+        )
+        self.assertEqual(replace.status_code, 200)
+        self.assertEqual(replace.json()["items"][0], "socks5://one:pass@127.0.0.1:1080")
+        listed = self.client.get("/api/proxy/pool")
+        self.assertEqual(len(listed.json()["items"]), 2)
+        deleted = self.client.post(
+            "/api/proxy/pool/delete",
+            json={"proxy": "http://two:8080"},
+        )
+        self.assertEqual(deleted.json()["items"], ["socks5://one:pass@127.0.0.1:1080"])
+
+    def test_integration_job_can_be_loaded_after_restart(self):
+        from webui import db
+
+        db.save_integration_job({
+            "id": "persisted-job",
+            "status": "running",
+            "stage": "waiting_registration",
+            "email": "persisted@example.com",
+            "relay_url": "http://127.0.0.1:8090/mail/token",
+            "run_id": "old-run",
+            "logs": [],
+            "updated_at": 123,
+        })
+        job = db.get_latest_integration_job()
+        self.assertEqual(job["id"], "persisted-job")
+        self.assertEqual(job["email"], "persisted@example.com")
+
 
 if __name__ == "__main__":
     unittest.main()

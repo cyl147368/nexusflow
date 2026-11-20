@@ -41,6 +41,8 @@ ensure_env() {
 }
 
 ensure_env PAYMENT_DETECTOR_TOKEN "$(openssl rand -hex 32)"
+ensure_env NEXUSFLOW_UPDATER_TOKEN "$(openssl rand -hex 32)"
+ensure_env NEXUSFLOW_REPO_PATH "$ROOT"
 
 docker compose pull --ignore-buildable || true
 docker compose build
