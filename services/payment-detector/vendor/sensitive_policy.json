@@ -1,0 +1,69 @@
+{
+  "schema": "sensitive_policy.v1",
+  "redacted_value": "[REDACTED]",
+  "sensitive_keys": [
+    "access_token",
+    "refresh_token",
+    "session_token",
+    "id_token",
+    "csrf_token",
+    "cookie",
+    "cookie_header",
+    "authorization",
+    "api_key",
+    "apikey",
+    "access_key",
+    "client_secret",
+    "private_key",
+    "password",
+    "secret",
+    "totp_secret",
+    "token",
+    "key"
+  ],
+  "safe_key_suffixes": [
+    "_len",
+    "_length",
+    "_count",
+    "_status",
+    "_type",
+    "_name",
+    "_label",
+    "_source",
+    "_present"
+  ],
+  "sensitive_key_fragments": [
+    "authorization",
+    "password",
+    "private_key",
+    "client_secret",
+    "access_token",
+    "refresh_token",
+    "session_token",
+    "cookie",
+    "api_key",
+    "apikey"
+  ],
+  "safe_key_paths": [
+    "proxy_affinity.session_id"
+  ],
+  "sensitive_options": [
+    "--token",
+    "--api-key",
+    "--password",
+    "--cookie",
+    "--access-token",
+    "--refresh-token"
+  ],
+  "text_patterns": [
+    {
+      "pattern": "(?i)(authorization\\s*:\\s*bearer\\s+)[^\\s,;]+",
+      "replacement": "\\1[REDACTED]"
+    },
+    {
+      "pattern": "(?i)((?:access_token|refresh_token|session_token|api_key|password)=)[^&\\s;]+",
+      "replacement": "\\1[REDACTED]"
+    }
+  ],
+  "log_text_patterns": []
+}
