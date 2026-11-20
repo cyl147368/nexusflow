@@ -83,6 +83,7 @@ const statusType = computed(() => ({
 const stageLabel = computed(() => ({
   idle: '等待启动',
   starting: '准备中',
+  preflighting: '检查注册网络与代理',
   creating_alias: '创建 iCloud 隐藏邮箱',
   registering_mailbox: '登记邮件中转',
   filling_pool: '写入邮箱池',

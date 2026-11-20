@@ -352,6 +352,49 @@ def _log(message: str) -> None:
     _set_job(logs=logs[-100:], message=message)
 
 
+def _redact_proxy(proxy: str) -> str:
+    if not proxy:
+        return "直连"
+    try:
+        parsed = urllib.parse.urlsplit(proxy)
+        host = parsed.hostname or "代理"
+        port = f":{parsed.port}" if parsed.port else ""
+        auth = "***:***@" if parsed.username else ""
+        return f"{parsed.scheme or 'http'}://{auth}{host}{port}"
+    except Exception:
+        return "代理"
+
+
+def _preflight_registration_network(proxy: str) -> None:
+    """Verify ChatGPT connectivity and oai-did before creating a hidden alias."""
+    from http_client import create_http_session
+
+    session = create_http_session(proxy=proxy or None)
+    try:
+        response = session.get("https://chatgpt.com/", timeout=15)
+        try:
+            device_id = session.cookies.get("oai-did", "")
+        except Exception:
+            device_id = ""
+        if not device_id:
+            raise IntegrationError(
+                f"注册预检失败：通过 {_redact_proxy(proxy)} 未获取到 chatgpt.com 的 "
+                f"oai-did Cookie（HTTP {response.status_code}）。请先测试代理，"
+                "并更换可访问 ChatGPT 的住宅代理后重试。"
+            )
+    except IntegrationError:
+        raise
+    except Exception as exc:
+        raise IntegrationError(
+            f"注册预检失败：无法通过 {_redact_proxy(proxy)} 连接 ChatGPT：{exc}"
+        ) from exc
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
 def _run_pipeline(job_id: str) -> None:
     try:
         cfg = db.get_integration_internal_config()
@@ -359,7 +402,10 @@ def _run_pipeline(job_id: str) -> None:
         if not account_id:
             raise IntegrationError("请先在第二步配置 iCloud 账号 ID")
 
-        _set_job(status="running", stage="creating_alias", started_at=time.time(), error="")
+        _set_job(status="running", stage="preflighting", started_at=time.time(), error="")
+        _log(f"正在检查注册网络与代理：{_redact_proxy(cfg.get('proxy') or '')}")
+        _preflight_registration_network(cfg.get("proxy") or "")
+        _set_job(stage="creating_alias")
         _log("正在通过 iCloud Prime 创建隐藏邮箱")
         created = _data(_request_json(
             "POST",

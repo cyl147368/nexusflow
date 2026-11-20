@@ -99,7 +99,7 @@ jobs:
             path="$(systemctl show "$unit" -p FragmentPath --value)"
             case "$path" in /etc/systemd/system/*) ;; *) continue ;; esac
             case "$unit" in
-              docker.service|containerd.service|ssh.service|sshd.service|cron.service|nginx.service) echo "KEEP $unit" ;;
+              docker.service|containerd.service|ssh.service|sshd.service|cron.service|nginx.service|independent-proxy.service) echo "KEEP $unit" ;;
               *sub2api*|*nexusflow*|*icloud*|*mail-hub*|*payment-detector*) echo "KEEP $unit" ;;
               *)
                 echo "STOP $unit"
