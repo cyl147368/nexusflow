@@ -2,6 +2,7 @@ import random
 import unittest
 
 from fingerprint import generate_fingerprint
+from auth_flow import _stable_firefox_fingerprint
 
 
 class FingerprintTest(unittest.TestCase):
@@ -18,6 +19,14 @@ class FingerprintTest(unittest.TestCase):
     def test_generator_rejects_unknown_only_selection(self):
         with self.assertRaises(ValueError):
             generate_fingerprint(browser_types=("unknown",))
+
+    def test_auth_flow_uses_known_stable_firefox_profile(self):
+        fingerprint = _stable_firefox_fingerprint(
+            rng=random.Random(7),
+            country_code="DE",
+        )
+        self.assertEqual(fingerprint["browser_type"], "firefox")
+        self.assertEqual(fingerprint["impersonate"], "firefox144")
 
 
 if __name__ == "__main__":

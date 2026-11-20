@@ -50,6 +50,27 @@ def _totp_now(secret_b32: str) -> str:
     return _hotp(secret_b32, int(time.time()) // 30)
 
 
+def _stable_firefox_fingerprint(
+    rng: Optional[random.Random] = None,
+    country_code: str = "",
+) -> dict:
+    """Use the Firefox profile that is stable through ChatGPT's auth edges."""
+    fallback = None
+    for _ in range(24):
+        fallback = generate_fingerprint(
+            rng=rng,
+            country_code=country_code,
+            browser_types=("firefox",),
+        )
+        if fallback.get("impersonate") == "firefox144":
+            return fallback
+    return fallback or generate_fingerprint(
+        rng=rng,
+        country_code=country_code,
+        browser_types=("firefox",),
+    )
+
+
 class AuthResult:
     """认证结果"""
 
@@ -103,9 +124,7 @@ class AuthFlow:
         self._env_overrides = dict(env_overrides or {})
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
-        self._fingerprint = generate_fingerprint(
-            browser_types=("chrome", "firefox"),
-        )
+        self._fingerprint = _stable_firefox_fingerprint()
         self._ua = self._fingerprint["user_agent"]
         self._impersonate_candidates = self._fingerprint.get(
             "fallback_impersonates",
@@ -1794,10 +1813,9 @@ class AuthFlow:
                     # with a cookie-less 403 on the Linux VPS even when curl
                     # and Firefox succeed through the same proxy. Firefox also
                     # avoids Chromium-client-hint mismatches in later steps.
-                    self._fingerprint = generate_fingerprint(
+                    self._fingerprint = _stable_firefox_fingerprint(
                         rng=rng,
                         country_code=country_code,
-                        browser_types=("firefox",),
                     )
                     self._ua = self._fingerprint["user_agent"]
                     new_imp = self._fingerprint["impersonate"]
