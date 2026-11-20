@@ -11,6 +11,7 @@ on:
         options:
           - inspect
           - stop-non-core
+          - start-cache-forge
 
 permissions:
   contents: read
@@ -51,6 +52,14 @@ jobs:
           ps -eo pid,ppid,user,comm,rss,args --sort=-rss | head -60
           echo "===== INTERESTING PROCESSES ====="
           ps -eo pid,ppid,user,comm,args | grep -E 'python|node|uvicorn|gunicorn|go/bin|screen|tmux|java|php' | grep -v grep || true
+
+          if [ "$ACTION" = "start-cache-forge" ]; then
+            echo "===== STARTING CACHE FORGE ====="
+            systemctl start cache-forge.service
+            systemctl --no-pager --full status cache-forge.service || true
+            ss -ltnp
+            exit 0
+          fi
 
           if [ "$ACTION" != "stop-non-core" ]; then
             echo "Inspection only; nothing stopped."
