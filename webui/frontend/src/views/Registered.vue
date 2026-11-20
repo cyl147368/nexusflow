@@ -27,7 +27,7 @@ const PAGE_SIZE = 20
 const rows = ref([])
 const total = ref(0)
 const page = ref(1)
-const filter = ref('all')
+const filter = ref('successful')
 const selected = ref([])
 const loading = ref(false)
 const checking = ref(false)
@@ -354,6 +354,7 @@ onActivated(() => load())
       <el-space wrap style="margin-bottom: 12px">
         <el-button @click="load(false)"><el-icon><Refresh /></el-icon>刷新</el-button>
         <el-select v-model="filter" style="width: 130px" @change="load(true)">
+          <el-option label="完整凭证" value="successful" />
           <el-option label="全部" value="all" />
           <el-option label="有 RT" value="has_rt" />
           <el-option label="无 RT" value="no_rt" />
