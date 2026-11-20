@@ -3,6 +3,7 @@ import http from './request'
 export const getIntegrationConfig = () => http.get('/api/integration/config')
 export const saveIntegrationConfig = (payload) => http.post('/api/integration/config', payload)
 export const testMailHub = () => http.post('/api/integration/test/mailhub')
+export const getMailHubInfo = () => http.get('/api/integration/mailhub/info')
 export const testICloud = () => http.post('/api/integration/test/icloud')
 export const listICloudAccounts = () => http.get('/api/integration/icloud/accounts')
 export const createICloudAccount = (payload) => http.post('/api/integration/icloud/account', payload)

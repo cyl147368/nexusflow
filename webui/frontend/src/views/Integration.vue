@@ -6,6 +6,7 @@ import {
   deleteICloudAlias,
   getIntegrationConfig,
   getIntegrationStatus,
+  getMailHubInfo,
   listICloudAliases,
   listICloudAccounts,
   normalizeCookie,
@@ -20,6 +21,7 @@ import { copyText, fmtTime } from '@/api/request'
 const loading = ref(true)
 const saving = ref(false)
 const testing = ref('')
+const mailHubInfo = ref({})
 const running = ref(false)
 const setupBusy = ref(false)
 const activeStep = ref(0)
@@ -135,6 +137,12 @@ async function load() {
     ElMessage.error(e.message)
   } finally {
     loading.value = false
+  }
+  try {
+    const info = await getMailHubInfo()
+    mailHubInfo.value = info.info || {}
+  } catch (_) {
+    mailHubInfo.value = {}
   }
 }
 
@@ -360,7 +368,28 @@ startPolling()
               placeholder="已设置时留空不修改" />
           </el-form-item>
         </el-form>
-        <div class="hint">服务会生成 <code>email ---- relay_url</code>，再写入主项目邮箱池。</div>
+        <div class="mailhub-facts">
+          <div>
+            <span>SMTP 入站</span>
+            <b>{{ mailHubInfo.smtp_enabled ? `0.0.0.0:${mailHubInfo.smtp_port}` : '启动后显示' }}</b>
+          </div>
+          <div>
+            <span>Mail Hub 对外地址</span>
+            <b>{{ mailHubInfo.public_url || '启动后显示' }}</b>
+          </div>
+          <div>
+            <span>默认接收模式</span>
+            <b>iCloud Prime 主收件箱</b>
+          </div>
+        </div>
+        <el-alert type="info" :closable="false" show-icon>
+          <template #title>
+            SMTP 是内建进站服务，不需要单独的登录用户名和密码。实际接收 OTP 的邮箱在下方 iCloud 账号中配置。
+          </template>
+        </el-alert>
+        <div class="hint mailhub-hint">
+          系统会自动生成 <code>email ---- relay_url</code> 并写入邮箱池，无需手工登记收件邮箱。
+        </div>
       </el-card>
 
       <el-card shadow="never" class="config-card">
@@ -405,7 +434,9 @@ startPolling()
             </el-select>
           </el-form-item>
           <el-form-item label="Apple ID"><el-input v-model="accountForm.real_email" /></el-form-item>
-          <el-form-item label="iCloud 邮箱"><el-input v-model="accountForm.icloud_email" /></el-form-item>
+          <el-form-item label="iCloud 接收邮箱">
+            <el-input v-model="accountForm.icloud_email" placeholder="例如 name@icloud.com" />
+          </el-form-item>
           <el-form-item label="App 专用密码">
             <el-input v-model="accountForm.app_password" type="password" show-password />
           </el-form-item>
@@ -624,6 +655,21 @@ startPolling()
 .hint { color: var(--el-text-color-secondary); font-size: 13px; }
 .cookie-actions { display: flex; align-items: center; gap: 12px; margin-top: -6px; }
 code { color: var(--el-color-primary); }
+.mailhub-facts {
+  display: grid; grid-template-columns: 0.8fr 1.4fr 1fr; gap: 8px;
+  margin: 12px 0;
+}
+.mailhub-facts div {
+  padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-lighter);
+}
+.mailhub-facts span { display: block; color: var(--el-text-color-secondary); font-size: 11px; }
+.mailhub-facts b {
+  display: block; margin-top: 4px; font-size: 12px;
+  color: var(--el-text-color-primary); overflow-wrap: anywhere;
+}
+.mailhub-hint { margin-top: 10px; }
 .alias-card {
   border: 1px solid var(--el-color-primary-light-8);
   background:
@@ -700,5 +746,6 @@ code { color: var(--el-color-primary); }
   .alias-account { grid-column: 1 / -1; justify-self: start; }
   .alias-search { width: 100%; }
   .alias-card-head { flex-direction: column; }
+  .mailhub-facts { grid-template-columns: 1fr; }
 }
 </style>

@@ -192,7 +192,16 @@ class MailboxReq(BaseModel):
 def health(_: None = Depends(require_admin)):
     with _conn() as con:
         count = con.execute("SELECT COUNT(*) FROM mailboxes").fetchone()[0]
-    return {"ok": True, "service": "nexusflow-mail-hub", "mailboxes": count}
+    return {
+        "ok": True,
+        "service": "nexusflow-mail-hub",
+        "mailboxes": count,
+        "public_url": PUBLIC_URL,
+        "smtp_host": SMTP_HOST,
+        "smtp_port": SMTP_PORT,
+        "smtp_enabled": SMTP_PORT > 0,
+        "default_source": "icloud-prime",
+    }
 
 
 @app.post("/api/mailboxes")

@@ -49,6 +49,17 @@ class MailHubApiTest(unittest.TestCase):
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 401)
 
+    def test_health_exposes_transport_configuration(self):
+        response = self.client.get(
+            "/api/health",
+            headers={"Authorization": "Bearer test-token"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["smtp_port"], 0)
+        self.assertFalse(body["smtp_enabled"])
+        self.assertEqual(body["default_source"], "icloud-prime")
+
 
 if __name__ == "__main__":
     unittest.main()

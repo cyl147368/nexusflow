@@ -1189,6 +1189,14 @@ def api_integration_test_mailhub():
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.get("/api/integration/mailhub/info")
+def api_integration_mailhub_info():
+    try:
+        return integration.mailhub_info()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/integration/test/icloud")
 def api_integration_test_icloud():
     try:

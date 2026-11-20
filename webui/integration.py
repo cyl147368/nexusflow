@@ -143,6 +143,17 @@ def test_mailhub(cfg: Optional[dict] = None) -> dict:
     return {"ok": True, "message": "邮件中转服务连接正常", "detail": response}
 
 
+def mailhub_info(cfg: Optional[dict] = None) -> dict:
+    cfg = cfg or db.get_integration_internal_config()
+    response = _request_json(
+        "GET",
+        _service_url(cfg["mailhub_url"], "/api/health"),
+        token=cfg["mailhub_token"],
+        timeout=10,
+    )
+    return {"ok": True, "info": response}
+
+
 def test_icloud(cfg: Optional[dict] = None) -> dict:
     cfg = cfg or db.get_integration_internal_config()
     response = _request_json(
