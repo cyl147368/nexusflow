@@ -1788,7 +1788,18 @@ class AuthFlow:
                     import random
                     session_seed = id(self.session) % (2**32)
                     rng = random.Random(session_seed)
-                    self._fingerprint = generate_fingerprint(rng=rng, country_code=country_code)
+                    # macOS/iOS Safari profiles are occasionally challenged by
+                    # Cloudflare with a cookie-less 403 on the Linux VPS even
+                    # when the same proxy succeeds with Chrome/Firefox. Keep a
+                    # stable browser family when the exit country is applied.
+                    for _ in range(12):
+                        candidate = generate_fingerprint(
+                            rng=rng,
+                            country_code=country_code,
+                        )
+                        if candidate["browser_type"] in {"chrome", "firefox"}:
+                            self._fingerprint = candidate
+                            break
                     self._ua = self._fingerprint["user_agent"]
                     new_imp = self._fingerprint["impersonate"]
                     self._impersonate_candidates = self._fingerprint.get(

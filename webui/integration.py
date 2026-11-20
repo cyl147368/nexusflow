@@ -1002,9 +1002,21 @@ def resume_pending() -> Optional[str]:
         _resume_started = True
         return str(persisted.get("id") or "") or None
     if status == "stopping":
+        email = str(persisted.get("email") or "").strip().lower()
+        run_id = str(persisted.get("run_id") or "").strip()
+        if run_id:
+            db.finish_run(
+                run_id,
+                "failed",
+                "用户停止流程，进程安全退出",
+                category="network",
+            )
+        if email:
+            db.reset_to_available(email)
         persisted["status"] = "stopped"
         persisted["stage"] = "stopped"
         persisted["updated_at"] = time.time()
+        persisted["message"] = "用户停止流程，占用邮箱已释放"
         db.save_integration_job(persisted)
         with _job_lock:
             _job = persisted
