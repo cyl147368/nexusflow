@@ -412,10 +412,10 @@ def _reusable_icloud_alias() -> Optional[dict]:
         if not email:
             continue
         registered = db.get_registered(email)
-        if registered and any(
-            str(registered.get(key) or "").strip()
-            for key in ("access_token", "session_token", "refresh_token")
-        ):
+        # Any registered row means this alias was already submitted to OpenAI,
+        # including a password-only partial row. Reusing it tends to recreate
+        # the same invalid_state / stale-OTP loop.
+        if registered:
             continue
         return item
     return None

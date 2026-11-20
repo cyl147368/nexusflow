@@ -270,11 +270,12 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertFalse(run_cycle.call_args.kwargs["resuming"])
         self.assertEqual(integration.get_job()["status"], "done")
 
-    def test_reusable_alias_skips_accounts_with_complete_credentials(self):
+    def test_reusable_alias_skips_any_previously_attempted_account(self):
         from webui import integration
 
         accounts = [
             {"email": "complete@example.com"},
+            {"email": "partial@example.com"},
             {"email": "reusable@example.com"},
         ]
         with (
@@ -284,6 +285,7 @@ class IntegrationApiTest(unittest.TestCase):
                 "get_registered",
                 side_effect=[
                     {"access_token": "token"},
+                    {"password": "partial-password"},
                     {},
                 ],
             ),
