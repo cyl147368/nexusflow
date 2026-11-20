@@ -294,6 +294,15 @@ class IntegrationApiTest(unittest.TestCase):
 
         self.assertEqual(selected["email"], "reusable@example.com")
 
+    def test_icloud_address_limit_is_classified_as_quota_wait(self):
+        from webui import integration
+
+        self.assertTrue(integration._is_quota_wait_error(
+            "HTTP 502: You have reached the limit of addresses you can create"
+        ))
+        self.assertTrue(integration._is_quota_wait_error("当前小时创建额度已用完"))
+        self.assertFalse(integration._is_quota_wait_error("warmup failed"))
+
 
 if __name__ == "__main__":
     unittest.main()

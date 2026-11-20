@@ -421,6 +421,20 @@ def _reusable_icloud_alias() -> Optional[dict]:
     return None
 
 
+def _is_quota_wait_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "429",
+            "额度",
+            "creation limit",
+            "reached the limit",
+            "limit of addresses",
+        )
+    )
+
+
 def _preflight_registration_network(proxy: str) -> None:
     """Verify ChatGPT connectivity and oai-did before creating a hidden alias."""
     from http_client import create_http_session
@@ -646,13 +660,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             ))
         except IntegrationError as exc:
             message = str(exc)
-            quota_markers = (
-                "429",
-                "额度",
-                "reached the limit",
-                "limit of addresses",
-            )
-            if not any(marker in message.lower() for marker in quota_markers):
+            if not _is_quota_wait_error(message):
                 raise
             fallback = _reusable_icloud_alias()
             if not fallback:
@@ -803,7 +811,7 @@ def _run_pipeline(job_id: str) -> None:
             except Exception as exc:
                 message = str(exc)
                 lowered = message.lower()
-                category = "network" if any(
+                category = "quota" if _is_quota_wait_error(message) else "network" if any(
                     marker in lowered
                     for marker in (
                         "preflight",
@@ -838,21 +846,37 @@ def _run_pipeline(job_id: str) -> None:
                 _log(f"第 {attempt} 轮注册成功：{result.get('email') or ''}")
                 _start_qualification(str(result.get("email") or ""), cfg)
             else:
-                failure_count = int(get_job().get("failure_count") or 0) + 1
-                consecutive = int(get_job().get("consecutive_failures") or 0) + 1
-                updates.update(
-                    failure_count=failure_count,
-                    consecutive_failures=consecutive,
-                    stage="cycle_failed",
-                    last_result="failed",
-                    error=result.get("error") or "本轮失败",
-                    error_category=result.get("category") or "unknown",
-                )
+                category = str(result.get("category") or "unknown")
+                if category == "quota":
+                    updates.update(
+                        quota_wait_count=int(get_job().get("quota_wait_count") or 0) + 1,
+                        stage="quota_wait",
+                        last_result="quota_wait",
+                        error=result.get("error") or "iCloud 创建额度已满",
+                        error_category="quota",
+                    )
+                else:
+                    failure_count = int(get_job().get("failure_count") or 0) + 1
+                    consecutive = int(get_job().get("consecutive_failures") or 0) + 1
+                    updates.update(
+                        failure_count=failure_count,
+                        consecutive_failures=consecutive,
+                        stage="cycle_failed",
+                        last_result="failed",
+                        error=result.get("error") or "本轮失败",
+                        error_category=category,
+                    )
                 _set_job(**updates)
-                _log(
-                    f"第 {attempt} 轮失败：{result.get('error') or '未知错误'}；"
-                    "连续模式将在退避后继续"
-                )
+                if category == "quota":
+                    _log(
+                        f"第 {attempt} 轮等待 iCloud 创建额度："
+                        f"{result.get('error') or '额度已满'}；不计入注册失败"
+                    )
+                else:
+                    _log(
+                        f"第 {attempt} 轮失败：{result.get('error') or '未知错误'}；"
+                        "连续模式将在退避后继续"
+                    )
 
             if _stop_event.is_set():
                 break
@@ -878,6 +902,8 @@ def _run_pipeline(job_id: str) -> None:
             base_delay = max(0, int(cfg.get("cool_down_seconds") or 30))
             if result.get("ok"):
                 delay = base_delay
+            elif str(result.get("category") or "") == "quota":
+                delay = min(900, max(300, base_delay))
             else:
                 delay = min(900, max(base_delay, 15) * min(8, 1 + int(
                     get_job().get("consecutive_failures") or 1
