@@ -69,11 +69,18 @@ class AutoLoopController:
         self._consecutive_network_fails = 0
         self._circuit_break_threshold = 3
         self._last_break_reason = ""
+        self._auto_resume_seconds = 15.0
+        self._auto_resume_at: Optional[float] = None
+        self._resource_retry_threshold = 3
         # SSE 订阅
         self._subscribers: list[queue.Queue] = []
         # 代理池 / 并发数
         self._proxy_pool: list[str] = []
         self._concurrency: int = 1
+        self._effective_concurrency: int = 1
+        self._proxy_stats: dict[str, dict] = {}
+        self._account_stats: dict[str, dict] = {}
+        self._proxy_in_use: dict[str, int] = {}
         # 目标成功数：0 = 不限量（保持旧行为）；>0 时累计成功达标即自动停止
         self._target_count: int = 0
 
@@ -93,9 +100,15 @@ class AutoLoopController:
             self._registered_fail = 0
             self._worker_status.clear()
             self._consecutive_network_fails = 0
+            self._last_break_reason = ""
+            self._auto_resume_at = None
+            self._proxy_stats.clear()
+            self._account_stats.clear()
+            self._proxy_in_use.clear()
             self._last_message = "auto-loop 启动"
             # 解析并发参数
             self._concurrency = max(1, min(20, int(self._options.get("concurrency") or 1)))
+            self._effective_concurrency = self._concurrency
             pool_text = self._options.get("proxy_pool") or ""
             self._proxy_pool = _parse_proxy_pool(pool_text)
             # 目标成功数（0=不限量）
@@ -120,6 +133,7 @@ class AutoLoopController:
                 return {"ok": False, "error": f"当前 state={self._state}，不可暂停"}
             self._pause_event.set()
             self._state = AutoLoopState.PAUSED
+            self._auto_resume_at = None
             self._last_message = "已请求暂停（当前 worker 跑完才生效）"
         self._broadcast("state", self._snapshot())
         return {"ok": True, "state": self._state}
@@ -130,6 +144,7 @@ class AutoLoopController:
                 return {"ok": False, "error": f"当前 state={self._state}，不可恢复"}
             self._pause_event.clear()
             self._state = AutoLoopState.RUNNING
+            self._auto_resume_at = None
             self._last_message = "已恢复"
         self._broadcast("state", self._snapshot())
         return {"ok": True, "state": self._state}
@@ -179,6 +194,7 @@ class AutoLoopController:
             ]
             return {
                 "state": self._state,
+                "configured_concurrency": self._concurrency,
                 "started_at": self._started_at,
                 "elapsed": (time.time() - self._started_at) if self._started_at else 0,
                 "registered_ok": self._registered_ok,
@@ -188,7 +204,19 @@ class AutoLoopController:
                     max(0, self._target_count - self._registered_ok)
                     if self._target_count else None
                 ),
-                "concurrency": self._concurrency,
+                "concurrency": self._effective_concurrency,
+                "auto_resume_at": self._auto_resume_at,
+                "proxy_health": {
+                    "total": len(self._proxy_candidates()),
+                    "in_use": sum(self._proxy_in_use.values()),
+                    "failed_100": sum(
+                        1
+                        for proxy in self._proxy_candidates()
+                        if (record := self._proxy_stats.get(proxy, {}))
+                        and record.get("attempts", 0) >= self._resource_retry_threshold
+                        and record.get("failures", 0) >= record.get("attempts", 0)
+                    ),
+                },
                 "proxy_pool_size": len(self._proxy_pool),
                 "workers": workers_info,
                 "last_message": self._last_message,
@@ -209,21 +237,215 @@ class AutoLoopController:
             self._last_message = msg
         self._broadcast("state", self._snapshot())
 
-    def _proxy_for_worker(self, worker_id: int) -> str:
-        """按 worker_id 从代理池里挑一个代理。空池时回退到 options.proxy。"""
-        if self._proxy_pool:
-            return self._proxy_pool[worker_id % len(self._proxy_pool)]
-        return self._options.get("proxy", "") or ""
+    @staticmethod
+    def _failure_scope(category: str, error: str) -> str:
+        """Classify a failed run as account, proxy, or ambiguous."""
+        text = (error or "").lower()
+        account_markers = (
+            "invalid_state",
+            "wrong_email_otp_code",
+            "otp",
+            "user_already_exists",
+            "registration_disallowed",
+            "email is invalid",
+            "邮箱",
+            "验证码",
+        )
+        if category == "account" or any(marker in text for marker in account_markers):
+            return "account"
+        proxy_markers = (
+            "proxy",
+            "socks",
+            "tls",
+            "ssl",
+            "curl:",
+            "curl (",
+            "connection",
+            "connect error",
+            "timeout",
+            "timed out",
+            "dns",
+            "name resolution",
+            "cloudflare",
+            "just a moment",
+            "403 forbidden",
+        )
+        if any(marker in text for marker in proxy_markers):
+            return "proxy"
+        if category == "network":
+            return "proxy"
+        return "both"
 
-    def _record_finish(self, ok: bool, category: str):
-        """worker 结束一个 run 后调，更新计数 + 熔断。"""
+    @staticmethod
+    def _resource_record(stats: dict, key: str) -> dict:
+        return stats.setdefault(key, {
+            "attempts": 0,
+            "successes": 0,
+            "failures": 0,
+            "consecutive_failures": 0,
+            "last_used_at": 0.0,
+            "last_error": "",
+        })
+
+    def _proxy_candidates(self) -> list[str]:
+        if self._proxy_pool:
+            return list(self._proxy_pool)
+        fallback = str(self._options.get("proxy") or "").strip()
+        return [fallback or "direct"]
+
+    def _acquire_proxy(self, worker_id: int) -> str:
+        """Choose the healthiest least-busy proxy, pushing bad routes to the end."""
         with self._lock:
+            candidates = self._proxy_candidates()
+
+            def score(proxy: str) -> tuple:
+                record = self._resource_record(self._proxy_stats, proxy)
+                attempts = int(record["attempts"])
+                failures = int(record["failures"])
+                exhausted = (
+                    attempts >= self._resource_retry_threshold
+                    and failures >= attempts
+                )
+                failure_rate = failures / max(1, attempts)
+                return (
+                    1 if exhausted else 0,
+                    failure_rate,
+                    int(record["consecutive_failures"]),
+                    int(self._proxy_in_use.get(proxy, 0)),
+                    float(record["last_used_at"]),
+                    worker_id,
+                )
+
+            proxy = min(candidates, key=score)
+            record = self._resource_record(self._proxy_stats, proxy)
+            record["last_used_at"] = time.time()
+            self._proxy_in_use[proxy] = int(self._proxy_in_use.get(proxy, 0)) + 1
+            return proxy
+
+    def _release_proxy(self, proxy: str) -> None:
+        with self._lock:
+            current = int(self._proxy_in_use.get(proxy, 0))
+            if current <= 1:
+                self._proxy_in_use.pop(proxy, None)
+            else:
+                self._proxy_in_use[proxy] = current - 1
+
+    def _claim_account(self, kind: str) -> Optional[dict]:
+        """Prefer clean accounts and move repeatedly failing accounts to the end."""
+        candidates = db.list_accounts(status="available", limit=2000, kind=kind)
+        with self._lock:
+            def score(account: dict) -> tuple:
+                email = str(account.get("email") or "").lower()
+                record = self._resource_record(self._account_stats, email)
+                attempts = int(record["attempts"])
+                failures = int(record["failures"])
+                exhausted = (
+                    attempts >= self._resource_retry_threshold
+                    and failures >= attempts
+                )
+                return (
+                    1 if exhausted else 0,
+                    failures / max(1, attempts),
+                    int(record["consecutive_failures"]),
+                    attempts,
+                    float(account.get("imported_at") or 0),
+                )
+
+            candidates.sort(key=score)
+        for account in candidates:
+            claimed = db.claim_account(str(account.get("email") or ""))
+            if claimed:
+                return claimed
+        return None
+
+    def _resources_fully_failed(self) -> bool:
+        """True only when every remaining account and proxy has a 100% error rate."""
+        kind = db.get_setting("mail_source", "outlook")
+        accounts = db.list_accounts(status="available", limit=2000, kind=kind)
+        with self._lock:
+            if not accounts or not self._proxy_candidates():
+                return False
+            threshold = self._resource_retry_threshold
+            account_failed = all(
+                (record := self._resource_record(
+                    self._account_stats,
+                    str(item.get("email") or "").lower(),
+                ))["attempts"] >= threshold
+                and record["failures"] >= record["attempts"]
+                for item in accounts
+            )
+            proxy_failed = all(
+                (record := self._resource_record(self._proxy_stats, proxy))["attempts"]
+                >= threshold
+                and record["failures"] >= record["attempts"]
+                for proxy in self._proxy_candidates()
+            )
+            return account_failed and proxy_failed
+
+    def _auto_resume_if_due(self) -> bool:
+        """Resume an automatically paused run after its cooldown expires."""
+        with self._lock:
+            due_at = self._auto_resume_at
+            if (
+                due_at is None
+                or time.time() < due_at
+                or self._state != AutoLoopState.PAUSED
+                or self._stop_event.is_set()
+            ):
+                return False
+            self._pause_event.clear()
+            self._state = AutoLoopState.RUNNING
+            self._auto_resume_at = None
+            self._consecutive_network_fails = 0
+            self._last_message = f"冷却结束，自动恢复；有效并发={self._effective_concurrency}"
+        logger.info(self._last_message)
+        self._broadcast("state", self._snapshot())
+        return True
+
+    def _record_finish(
+        self,
+        ok: bool,
+        category: str,
+        error: str = "",
+        email: str = "",
+        proxy: str = "",
+    ):
+        """Worker finished: debit the responsible resource and park bad routes."""
+        scope = "" if ok else self._failure_scope(category, error)
+        with self._lock:
+            if proxy:
+                record = self._resource_record(self._proxy_stats, proxy)
+                record["attempts"] += 1
+                record["last_error"] = (error or "")[:300]
+                if ok:
+                    record["successes"] += 1
+                    record["consecutive_failures"] = 0
+                elif scope in {"proxy", "both"}:
+                    record["failures"] += 1
+                    record["consecutive_failures"] += 1
+                else:
+                    record["consecutive_failures"] = 0
+            if email:
+                record = self._resource_record(
+                    self._account_stats,
+                    email.strip().lower(),
+                )
+                record["attempts"] += 1
+                record["last_error"] = (error or "")[:300]
+                if ok:
+                    record["successes"] += 1
+                    record["consecutive_failures"] = 0
+                elif scope in {"account", "both"}:
+                    record["failures"] += 1
+                    record["consecutive_failures"] += 1
+                else:
+                    record["consecutive_failures"] = 0
             if ok:
                 self._registered_ok += 1
                 self._consecutive_network_fails = 0
             else:
                 self._registered_fail += 1
-                if category == "network":
+                if scope in {"proxy", "both"}:
                     self._consecutive_network_fails += 1
                 else:
                     self._consecutive_network_fails = 0
@@ -234,10 +456,9 @@ class AutoLoopController:
             target_reached = bool(
                 self._target_count and self._registered_ok >= self._target_count
             )
-            trigger_break = (
-                self._consecutive_network_fails >= self._circuit_break_threshold
-                and self._state == AutoLoopState.RUNNING
-            )
+            trigger_break = False
+            if not ok and self._state == AutoLoopState.RUNNING:
+                trigger_break = self._resources_fully_failed()
 
         if target_reached:
             with self._lock:
@@ -254,9 +475,13 @@ class AutoLoopController:
             with self._lock:
                 self._pause_event.set()
                 self._state = AutoLoopState.PAUSED
+                previous_concurrency = self._effective_concurrency
+                self._effective_concurrency = max(1, previous_concurrency // 2)
+                self._auto_resume_at = time.time() + self._auto_resume_seconds
                 self._last_break_reason = (
-                    f"连续 {self._consecutive_network_fails} 次网络/环境错误，"
-                    f"自动暂停（号已自动 release，请检查代理后点恢复）"
+                    "剩余账号和代理均已达到 100% 错误率，"
+                    f"暂停 {int(self._auto_resume_seconds)} 秒后自动恢复；"
+                    f"有效并发 {previous_concurrency} -> {self._effective_concurrency}"
                 )
                 self._last_message = self._last_break_reason
                 self._consecutive_network_fails = 0
@@ -294,8 +519,7 @@ class AutoLoopController:
     def _worker_loop(self, worker_id: int):
         """单 worker 循环：claim → 跑 → 等结束 → 继续。"""
         idle_round = 0
-        proxy = self._proxy_for_worker(worker_id)
-        logger.info(f"[worker-{worker_id}] 启动 (proxy={proxy or '直连'})")
+        logger.info(f"[worker-{worker_id}] 启动")
 
         while True:
             # 检查停止
@@ -306,8 +530,17 @@ class AutoLoopController:
             # 检查暂停
             if self._pause_event.is_set():
                 while self._pause_event.is_set() and not self._stop_event.is_set():
+                    if self._auto_resume_if_due():
+                        break
                     time.sleep(0.5)
                 if self._stop_event.is_set():
+                    return
+            with self._lock:
+                if worker_id >= self._effective_concurrency:
+                    logger.info(
+                        f"[worker-{worker_id}] 动态并发降至 "
+                        f"{self._effective_concurrency}，退出"
+                    )
                     return
 
             # 目标数量闸门：已成功 + 在跑的（复用 _worker_status 当在跑数）≥ 目标 → 本 worker 退出
@@ -331,7 +564,7 @@ class AutoLoopController:
                 self._set_message(str(e))
                 return
             if pooled:
-                account = db.claim_next(kind=mail_source)
+                account = self._claim_account(mail_source)
             else:
                 account = {
                     "email": f"{mail_source}_placeholder_"
@@ -358,17 +591,28 @@ class AutoLoopController:
             idle_round = 0
 
             # 给这个 run 注入 worker 自己的代理
+            proxy = self._acquire_proxy(worker_id)
             run_options = dict(self._options)
-            if proxy:
+            if proxy and proxy != "direct":
                 run_options["proxy"] = proxy
+            else:
+                run_options["proxy"] = ""
 
             # 启一个 run
             try:
                 run_id = registrar.start_registration(account, run_options)
             except Exception as e:
+                self._release_proxy(proxy)
                 logger.exception(f"[worker-{worker_id}] 启动注册失败: {e}")
                 if pooled:
                     db.release_unused(account["email"])
+                self._record_finish(
+                    False,
+                    "network",
+                    str(e),
+                    str(account.get("email") or ""),
+                    proxy,
+                )
                 time.sleep(2)
                 continue
 
@@ -388,11 +632,18 @@ class AutoLoopController:
             })
 
             # 等当前 run 跑完
-            ok, category = self._wait_run_finish(run_id)
+            ok, category, error = self._wait_run_finish(run_id)
 
             with self._lock:
                 self._worker_status.pop(worker_id, None)
-            self._record_finish(ok, category)
+            self._release_proxy(proxy)
+            self._record_finish(
+                ok,
+                category,
+                error,
+                str(account.get("email") or ""),
+                proxy,
+            )
             self._broadcast("state", self._snapshot())
             self._broadcast("run_finished", {
                 "worker_id": worker_id,
@@ -410,26 +661,26 @@ class AutoLoopController:
                         break
                     time.sleep(0.1)
 
-    def _wait_run_finish(self, run_id: str, timeout: int = 1800) -> tuple[bool, str]:
+    def _wait_run_finish(self, run_id: str, timeout: int = 1800) -> tuple[bool, str, str]:
         """轮询 runs 表，等 run 跑完。"""
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self._stop_event.is_set():
-                return False, ""
+                return False, "", "stopped"
             con = db._conn()
             cur = con.execute(
-                "SELECT status, error_category FROM runs WHERE run_id=?", (run_id,)
+                "SELECT status, error_category, error FROM runs WHERE run_id=?", (run_id,)
             )
             row = cur.fetchone()
             if row:
                 st = row["status"]
                 if st == "done":
-                    return True, ""
+                    return True, "", ""
                 if st == "failed":
-                    return False, (row["error_category"] or "")
+                    return False, (row["error_category"] or ""), (row["error"] or "")
             time.sleep(1)
         logger.warning(f"run {run_id} 等了 {timeout}s 没结束，超时放弃")
-        return False, ""
+        return False, "network", f"run {run_id} timeout"
 
 
 # 全局单例

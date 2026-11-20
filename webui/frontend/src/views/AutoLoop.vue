@@ -26,9 +26,17 @@ const canStop = computed(() => st.value !== 'stopped')
 const stateLabel = computed(() => ({
   stopped: '未运行', running: '运行中', paused: '已暂停',
 }[st.value] || st.value))
+const effectiveStateLabel = computed(() => {
+  if (st.value === 'paused' && autoStatus.value.auto_resume_at) return '冷却中，将自动恢复'
+  return stateLabel.value
+})
 const stateType = computed(() => ({
   stopped: 'info', running: 'success', paused: 'warning',
 }[st.value] || 'info'))
+const autoResumeText = computed(() => {
+  const at = Number(autoStatus.value.auto_resume_at || 0)
+  return at ? new Date(at * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+})
 
 const workers = computed(() => Array.isArray(autoStatus.value.workers) ? autoStatus.value.workers : [])
 
@@ -96,7 +104,7 @@ async function call(fn, name) {
             当前 {{ proxyCount }} 个代理
           </el-tag>
           <span class="hint">
-            {{ proxyCount ? '各 worker 按顺序轮流取用' : '为空：所有 worker 用「单次注册」页填的单代理' }}
+            {{ proxyCount ? '按健康度和占用数动态选择，异常代理会自动排到队尾' : '为空：所有 worker 用「单次注册」页填的单代理' }}
           </span>
           <el-button size="small" @click="router.push('/proxy')">管理代理池</el-button>
         </div>
@@ -110,7 +118,7 @@ async function call(fn, name) {
       </el-space>
 
       <el-descriptions :column="4" border size="small" style="margin-top: 16px">
-        <el-descriptions-item label="状态"><StatusDot :type="stateType" :text="stateLabel" /></el-descriptions-item>
+        <el-descriptions-item label="状态"><StatusDot :type="stateType" :text="effectiveStateLabel" /></el-descriptions-item>
         <el-descriptions-item label="成功">
           <b style="color: var(--el-color-success)">{{ autoStatus.registered_ok || 0 }}</b>
           <span v-if="autoStatus.target_count"> / {{ autoStatus.target_count }}</span>
@@ -118,9 +126,20 @@ async function call(fn, name) {
         <el-descriptions-item label="失败">
           <b style="color: var(--el-color-danger)">{{ autoStatus.registered_fail || 0 }}</b>
         </el-descriptions-item>
-        <el-descriptions-item label="并发">{{ autoStatus.concurrency || 1 }}</el-descriptions-item>
+        <el-descriptions-item label="并发">
+          {{ autoStatus.concurrency || 1 }}
+          <span v-if="autoStatus.configured_concurrency" class="hint">
+            / 配置 {{ autoStatus.configured_concurrency }}
+          </span>
+        </el-descriptions-item>
       </el-descriptions>
 
+      <el-alert
+        v-if="autoStatus.auto_resume_at"
+        type="warning" :closable="false" show-icon
+        style="margin-top: 12px"
+        :title="`连续异常触发降并发保护，将于 ${autoResumeText} 自动恢复`"
+      />
       <div v-if="workers.length" style="margin-top: 12px">
         <el-tag v-for="w in workers" :key="w.id" type="warning" effect="plain" style="margin: 0 6px 6px 0">
           worker-{{ w.id }} · {{ w.email }}
