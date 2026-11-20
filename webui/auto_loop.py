@@ -105,6 +105,8 @@ class AutoLoopController:
             self._proxy_stats.clear()
             self._account_stats.clear()
             self._proxy_in_use.clear()
+            self._load_resource_stats()
+            self._seed_account_stats_from_runs()
             self._last_message = "auto-loop 启动"
             # 解析并发参数
             self._concurrency = max(1, min(20, int(self._options.get("concurrency") or 1)))
@@ -236,6 +238,59 @@ class AutoLoopController:
         with self._lock:
             self._last_message = msg
         self._broadcast("state", self._snapshot())
+
+    def _load_resource_stats(self) -> None:
+        """Restore health ledgers so a service restart does not retry bad routes first."""
+        for setting_key, target in (
+            ("auto_loop_proxy_stats", self._proxy_stats),
+            ("auto_loop_account_stats", self._account_stats),
+        ):
+            try:
+                parsed = json.loads(db.get_setting(setting_key, "{}") or "{}")
+            except Exception:
+                parsed = {}
+            if not isinstance(parsed, dict):
+                continue
+            for key, value in parsed.items():
+                if isinstance(value, dict):
+                    target[str(key)] = {
+                        "attempts": int(value.get("attempts") or 0),
+                        "successes": int(value.get("successes") or 0),
+                        "failures": int(value.get("failures") or 0),
+                        "consecutive_failures": int(
+                            value.get("consecutive_failures") or 0
+                        ),
+                        "last_used_at": float(value.get("last_used_at") or 0),
+                        "last_error": str(value.get("last_error") or "")[:300],
+                    }
+
+    def _seed_account_stats_from_runs(self) -> None:
+        """Seed account penalties from persisted failed runs on the first rollout."""
+        already_persisted = set(self._account_stats)
+        for run in db.list_runs(500):
+            if run.get("status") != "failed":
+                continue
+            email = str(run.get("email") or "").strip().lower()
+            if not email or email in already_persisted:
+                continue
+            scope = self._failure_scope(
+                str(run.get("error_category") or ""),
+                str(run.get("error") or ""),
+            )
+            if scope not in {"account", "both"}:
+                continue
+            record = self._resource_record(self._account_stats, email)
+            record["attempts"] += 1
+            record["failures"] += 1
+            record["consecutive_failures"] += 1
+            record["last_error"] = str(run.get("error") or "")[:300]
+
+    def _persist_resource_stats(self) -> None:
+        with self._lock:
+            proxy_stats = json.loads(json.dumps(self._proxy_stats, ensure_ascii=False))
+            account_stats = json.loads(json.dumps(self._account_stats, ensure_ascii=False))
+        db.set_setting("auto_loop_proxy_stats", json.dumps(proxy_stats, ensure_ascii=False))
+        db.set_setting("auto_loop_account_stats", json.dumps(account_stats, ensure_ascii=False))
 
     @staticmethod
     def _failure_scope(category: str, error: str) -> str:
@@ -459,6 +514,8 @@ class AutoLoopController:
             trigger_break = False
             if not ok and self._state == AutoLoopState.RUNNING:
                 trigger_break = self._resources_fully_failed()
+
+        self._persist_resource_stats()
 
         if target_reached:
             with self._lock:

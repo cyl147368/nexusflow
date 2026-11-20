@@ -94,7 +94,7 @@ class AutoLoopSchedulerTest(unittest.TestCase):
             self.controller,
             "_resources_fully_failed",
             return_value=True,
-        ):
+        ), patch.object(self.controller, "_persist_resource_stats"):
             self.controller._record_finish(
                 False,
                 "network",
@@ -114,7 +114,7 @@ class AutoLoopSchedulerTest(unittest.TestCase):
             self.controller,
             "_resources_fully_failed",
             return_value=False,
-        ):
+        ), patch.object(self.controller, "_persist_resource_stats"):
             self.controller._record_finish(
                 False,
                 "network",
