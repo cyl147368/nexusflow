@@ -687,7 +687,7 @@ class ICloudRelayProvider(MailProvider):
     # registrar.classify_error 会读这个标志（默认 False，不影响其他 provider）。
     accepts_existing_account = True
 
-    def __init__(self, email: str, relay_url: str, timeout: int = 20):
+    def __init__(self, email: str, relay_url: str, timeout: int = 60):
         email = (email or "").strip().lower()
         relay_url = (relay_url or "").strip()
         if not email:

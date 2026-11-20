@@ -237,6 +237,7 @@ def _message_recipients(message) -> str:
 def _refresh_imap(mailbox: dict) -> dict:
     if mailbox.get("source") != "imap":
         return {"ok": True, "source": mailbox.get("source"), "matched": 0, "scanned": 0}
+    started_at = time.monotonic()
     client = _connect_imap(
         str(mailbox.get("imap_host") or ""),
         int(mailbox.get("imap_port") or 993),
@@ -252,11 +253,42 @@ def _refresh_imap(mailbox: dict) -> dict:
         status, data = client.search(None, "SINCE", since)
         if status != "OK":
             raise RuntimeError("IMAP 搜索邮件失败")
-        ids = data[0].split()[-300:]
+        ids = data[0].split()[-100:]
         target = str(mailbox["email"]).lower()
         matched = 0
         unmatched_samples = []
         for message_id in reversed(ids):
+            # Fetch headers first. QQ/IMAP can be slow enough that downloading
+            # 100 full messages on every 3-second OTP poll consumed the entire
+            # 180-second verification window before the new message was seen.
+            header_fields = (
+                "From To Cc Delivered-To X-Original-To Envelope-To "
+                "X-Forwarded-To Subject Message-ID Date"
+            )
+            status, fetched = client.fetch(
+                message_id,
+                f"(BODY.PEEK[HEADER.FIELDS ({header_fields})])",
+            )
+            if status != "OK":
+                continue
+            raw = next(
+                (item[1] for item in fetched if isinstance(item, tuple) and len(item) > 1),
+                b"",
+            )
+            if not raw:
+                continue
+            headers = email.message_from_bytes(raw, policy=email.policy.default)
+            recipient = _message_recipients(headers)
+            if target not in recipient.lower():
+                if len(unmatched_samples) < 20:
+                    unmatched_samples.append({
+                        "to": str(headers.get("To") or ""),
+                        "delivered_to": str(headers.get("Delivered-To") or ""),
+                        "x_original_to": str(headers.get("X-Original-To") or ""),
+                        "from": str(headers.get("From") or ""),
+                        "subject": str(headers.get("Subject") or ""),
+                    })
+                continue
             status, fetched = client.fetch(message_id, "(RFC822)")
             if status != "OK":
                 continue
@@ -267,17 +299,6 @@ def _refresh_imap(mailbox: dict) -> dict:
             if not raw:
                 continue
             message = email.message_from_bytes(raw, policy=email.policy.default)
-            recipient = _message_recipients(message)
-            if target not in recipient.lower():
-                if len(unmatched_samples) < 8:
-                    unmatched_samples.append({
-                        "to": str(message.get("To") or ""),
-                        "delivered_to": str(message.get("Delivered-To") or ""),
-                        "x_original_to": str(message.get("X-Original-To") or ""),
-                        "from": str(message.get("From") or ""),
-                        "subject": str(message.get("Subject") or ""),
-                    })
-                continue
             sender = str(message.get("From") or "")
             subject = str(message.get("Subject") or "")
             fingerprint = str(message.get("Message-ID") or f"imap:{mailbox['token']}:{message_id.decode()}")
@@ -296,6 +317,7 @@ def _refresh_imap(mailbox: dict) -> dict:
             "scanned": len(ids),
             "matched": matched,
             "unmatched_samples": unmatched_samples,
+            "duration_ms": round((time.monotonic() - started_at) * 1000),
             "checked_at": time.time(),
         }
     finally:
