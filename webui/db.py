@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 import sys
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Optional
 
@@ -30,7 +32,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-DB_PATH = Path(__file__).resolve().parent / "webui.db"
+DB_PATH = Path(os.getenv("NEXUSFLOW_DB_PATH", Path(__file__).resolve().parent / "webui.db"))
 
 _lock = threading.Lock()  # SQLite 写入串行化
 
@@ -134,6 +136,7 @@ def init_db():
     if "totp_factor_id" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN totp_factor_id TEXT")
         con.commit()
+    con.close()
 
 
 # ──────────────────────── outlook 号池 ────────────────────────
@@ -940,15 +943,14 @@ def list_runs(limit: int = 50) -> list[dict]:
 
 
 def get_setting(key: str, default: str = "") -> str:
-    con = _conn()
-    cur = con.execute("SELECT value FROM settings WHERE key=?", (key,))
-    row = cur.fetchone()
-    return row["value"] if row else default
+    with closing(_conn()) as con:
+        cur = con.execute("SELECT value FROM settings WHERE key=?", (key,))
+        row = cur.fetchone()
+        return row["value"] if row else default
 
 
 def set_setting(key: str, value) -> None:
-    with _lock:
-        con = _conn()
+    with _lock, closing(_conn()) as con:
         con.execute(
             "INSERT INTO settings(key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1030,6 +1032,69 @@ def get_mail_settings() -> dict:
 def get_cf_admin_token() -> str:
     """内部用：拿明文 admin_token。"""
     return get_setting("cf_admin_token", "")
+
+
+# ──────────────────────── NexusFlow 一体化配置 ────────────────────────
+
+
+def get_integration_config() -> dict:
+    """返回一体化流程配置。密钥只返回是否已设置。"""
+    mailhub_token = get_setting("nx_mailhub_token") or os.getenv("MAILHUB_ADMIN_TOKEN", "")
+    icloud_token = get_setting("nx_icloud_token") or os.getenv("ICLOUD_PRIME_API_TOKEN", "")
+    return {
+        "mailhub_url": get_setting(
+            "nx_mailhub_url", os.getenv("MAILHUB_INTERNAL_URL", "http://mail-hub:8090")
+        ),
+        "mailhub_token": "***" if mailhub_token else "",
+        "icloud_url": get_setting(
+            "nx_icloud_url", os.getenv("ICLOUD_INTERNAL_URL", "http://icloud-prime:8081")
+        ),
+        "icloud_token": "***" if icloud_token else "",
+        "icloud_account_id": get_setting("nx_icloud_account_id", ""),
+        "proxy": get_setting("nx_proxy", ""),
+        "otp_timeout": get_setting("nx_otp_timeout", "180"),
+        "want_access_token": get_setting("nx_want_access_token", "1"),
+        "want_session_token": get_setting("nx_want_session_token", "1"),
+        "want_refresh_token": get_setting("nx_want_refresh_token", "1"),
+        "want_2fa": get_setting("nx_want_2fa", "0"),
+    }
+
+
+def get_integration_internal_config() -> dict:
+    """内部编排使用，包含明文服务密钥。绝不能直接返回前端。"""
+    cfg = get_integration_config()
+    cfg["mailhub_token"] = (
+        get_setting("nx_mailhub_token") or os.getenv("MAILHUB_ADMIN_TOKEN", "")
+    )
+    cfg["icloud_token"] = (
+        get_setting("nx_icloud_token") or os.getenv("ICLOUD_PRIME_API_TOKEN", "")
+    )
+    cfg["otp_timeout"] = int(get_setting("nx_otp_timeout", "180") or 180)
+    for key in ("want_access_token", "want_session_token", "want_refresh_token", "want_2fa"):
+        cfg[key] = get_setting(f"nx_{key}", "0" if key == "want_2fa" else "1") in (
+            "1", "true", "yes", "on",
+        )
+    return cfg
+
+
+def save_integration_config(data: dict) -> None:
+    """保存一体化配置；密钥传 '***' 或留空时保持原值。"""
+    for key in (
+        "mailhub_url", "icloud_url", "icloud_account_id", "proxy", "otp_timeout",
+    ):
+        if key in data:
+            set_setting(f"nx_{key}", str(data.get(key) or "").strip())
+    for key in ("mailhub_token", "icloud_token"):
+        value = data.get(key)
+        if value and value != "***":
+            set_setting(f"nx_{key}", str(value).strip())
+    for key in ("want_access_token", "want_session_token", "want_refresh_token", "want_2fa"):
+        if key in data:
+            value = data[key]
+            enabled = value if isinstance(value, bool) else str(value).lower() in (
+                "1", "true", "yes", "on",
+            )
+            set_setting(f"nx_{key}", "1" if enabled else "0")
 
 
 # ──────────────────────── SMS 接码配置 ────────────────────────

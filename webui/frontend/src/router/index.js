@@ -24,6 +24,12 @@ const routes = [
     meta: { title: '单次注册', icon: 'VideoPlay', group: '注册' },
   },
   {
+    path: '/integration',
+    name: 'integration',
+    component: () => import('@/views/Integration.vue'),
+    meta: { title: '一体化启动', icon: 'Connection', group: '概览' },
+  },
+  {
     path: '/auto',
     name: 'auto',
     component: () => import('@/views/AutoLoop.vue'),
@@ -81,7 +87,7 @@ const router = createRouter({
 // 路由切换顶部进度条
 router.beforeEach((to, from, next) => {
   NProgress.start()
-  if (to.meta?.title) document.title = `${to.meta.title} · Outlook Register`
+  if (to.meta?.title) document.title = `${to.meta.title} · NexusFlow`
   next()
 })
 router.afterEach(() => {

@@ -1,0 +1,62 @@
+name: nexusflow
+
+services:
+  nexusflow:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      icloud-prime:
+        condition: service_started
+      mail-hub:
+        condition: service_started
+    ports:
+      - "${NEXUSFLOW_BIND:-0.0.0.0}:${NEXUSFLOW_PORT:-8770}:8765"
+    environment:
+      NEXUSFLOW_BASIC_USER: "${NEXUSFLOW_BASIC_USER:-admin}"
+      NEXUSFLOW_BASIC_PASSWORD: "${NEXUSFLOW_BASIC_PASSWORD:?run scripts/deploy.sh or set in .env}"
+      MAILHUB_INTERNAL_URL: "http://mail-hub:8090"
+      ICLOUD_INTERNAL_URL: "http://icloud-prime:8081"
+      MAILHUB_ADMIN_TOKEN: "${MAILHUB_ADMIN_TOKEN:?required}"
+      ICLOUD_PRIME_API_TOKEN: "${ICLOUD_PRIME_API_TOKEN:?required}"
+    volumes:
+      - nexusflow-runtime:/app/runtime
+    networks: [nexusflow]
+
+  icloud-prime:
+    build:
+      context: ./services/icloud-prime
+    restart: unless-stopped
+    environment:
+      ICLOUD_PRIME_API_TOKEN: "${ICLOUD_PRIME_API_TOKEN:?required}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - icloud-prime-data:/app/data
+    expose: ["8081"]
+    networks: [nexusflow]
+
+  mail-hub:
+    build:
+      context: ./services/mail-hub
+    restart: unless-stopped
+    environment:
+      MAILHUB_ADMIN_TOKEN: "${MAILHUB_ADMIN_TOKEN:?required}"
+      MAILHUB_PUBLIC_URL: "${MAILHUB_PUBLIC_URL:?required}"
+      MAILHUB_DB: "/app/data/mailhub.db"
+      MAILHUB_SMTP_HOST: "0.0.0.0"
+      MAILHUB_SMTP_PORT: "2525"
+      TZ: "${TZ:-Asia/Shanghai}"
+    ports:
+      - "${MAILHUB_BIND:-0.0.0.0}:${MAILHUB_PORT:-8090}:8090"
+      - "${MAILHUB_SMTP_BIND:-0.0.0.0}:${MAILHUB_SMTP_PUBLIC_PORT:-2525}:2525"
+    volumes:
+      - mail-hub-data:/app/data
+    networks: [nexusflow]
+
+networks:
+  nexusflow:
+
+volumes:
+  nexusflow-runtime:
+  icloud-prime-data:
+  mail-hub-data:

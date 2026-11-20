@@ -1,0 +1,345 @@
+"""NexusFlow Mail Hub.
+
+提供两种收件方式：
+  1. iCloud Prime 代理：按隐藏邮箱从 iCloud 账号读取邮件，供统一流程使用。
+  2. 内置 SMTP catch-all：兼容自有域名的外部投递。
+
+对主项目暴露稳定接口：POST /api/mailboxes -> { email, relay_url }。
+relay_url 是可被主项目邮件 provider 解析的 HTML 收件页。
+"""
+from __future__ import annotations
+
+import email
+import email.policy
+import html
+import json
+import os
+import re
+import secrets
+import sqlite3
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Optional
+
+from aiosmtpd.controller import Controller
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+
+DB_PATH = Path(os.getenv("MAILHUB_DB", "/app/data/mailhub.db"))
+ADMIN_TOKEN = os.getenv("MAILHUB_ADMIN_TOKEN", "")
+PUBLIC_URL = os.getenv("MAILHUB_PUBLIC_URL", "http://127.0.0.1:8090").rstrip("/")
+SMTP_HOST = os.getenv("MAILHUB_SMTP_HOST", "0.0.0.0")
+SMTP_PORT = int(os.getenv("MAILHUB_SMTP_PORT", "2525"))
+_lock = threading.Lock()
+_otp_re = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+
+app = FastAPI(title="NexusFlow Mail Hub", docs_url=None, redoc_url=None)
+
+
+def _conn() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=20)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    return con
+
+
+def init_db() -> None:
+    with _lock, _conn() as con:
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS mailboxes (
+                token           TEXT PRIMARY KEY,
+                email           TEXT NOT NULL,
+                source          TEXT NOT NULL,
+                label           TEXT,
+                icloud_url      TEXT,
+                icloud_token    TEXT,
+                icloud_account  TEXT,
+                created_at      REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_mailbox_email_source
+                ON mailboxes(email, source);
+            CREATE TABLE IF NOT EXISTS messages (
+                mailbox_token   TEXT NOT NULL,
+                message_key     TEXT NOT NULL,
+                sender          TEXT,
+                recipient       TEXT,
+                subject         TEXT,
+                body            TEXT,
+                created_at      REAL NOT NULL,
+                PRIMARY KEY(mailbox_token, message_key)
+            );
+            """
+        )
+
+
+def require_admin(authorization: str = Header(default="")) -> None:
+    if not ADMIN_TOKEN:
+        raise HTTPException(503, "MAILHUB_ADMIN_TOKEN 未配置")
+    if authorization != f"Bearer {ADMIN_TOKEN}":
+        raise HTTPException(401, "未授权")
+
+
+def _extract_otp(text: str) -> str:
+    for match in _otp_re.findall(text or ""):
+        if match not in {"123456", "000000"}:
+            return match
+    return ""
+
+
+def _store_message(token: str, key: str, sender: str, recipient: str, subject: str, body: str) -> None:
+    with _lock, _conn() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO messages"
+            "(mailbox_token,message_key,sender,recipient,subject,body,created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (token, key[:300], sender[:500], recipient[:500], subject[:500], body[:100000], time.time()),
+        )
+
+
+def _get_mailbox(token: str) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute("SELECT * FROM mailboxes WHERE token=?", (token,)).fetchone()
+        return dict(row) if row else None
+
+
+def _stored_messages(token: str) -> list[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM messages WHERE mailbox_token=? ORDER BY created_at DESC LIMIT 50",
+            (token,),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["uid"] = item.pop("message_key")
+        item["from"] = item.pop("sender")
+        item["to"] = item.pop("recipient")
+        item["date"] = item.pop("created_at")
+        item["otp"] = _extract_otp(f"{item.get('subject', '')}\n{item.get('body', '')}")
+        out.append(item)
+    return out
+
+
+def _request_json(url: str, token: str) -> dict:
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(f"iCloud inbox HTTP {exc.code}: {detail}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"iCloud inbox 连接失败: {exc}") from exc
+
+
+def _refresh_icloud(mailbox: dict) -> None:
+    if mailbox.get("source") != "icloud-prime":
+        return
+    query = urllib.parse.urlencode({
+        "account_id": mailbox.get("icloud_account") or "",
+        "alias": mailbox["email"],
+        "limit": 30,
+        "days": 7,
+        "body": 1,
+    })
+    base = (mailbox.get("icloud_url") or "").rstrip("/")
+    payload = _request_json(f"{base}/api/inbox?{query}", mailbox.get("icloud_token") or "")
+    if payload.get("success") is False:
+        raise RuntimeError(payload.get("message") or "iCloud 收件箱读取失败")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    for index, item in enumerate(data.get("messages") or []):
+        uid = str(item.get("uid") or item.get("id") or item.get("message_id") or index)
+        sender = str(item.get("from") or item.get("sender") or "")
+        recipient = str(item.get("to") or item.get("recipient") or mailbox["email"])
+        subject = str(item.get("subject") or "")
+        body = str(item.get("body") or item.get("preview") or "")
+        _store_message(mailbox["token"], f"icloud:{uid}", sender, recipient, subject, body)
+
+
+def _messages_for(token: str, refresh: bool = True) -> list[dict]:
+    mailbox = _get_mailbox(token)
+    if not mailbox:
+        raise HTTPException(404, "邮箱不存在")
+    if refresh and mailbox.get("source") == "icloud-prime":
+        try:
+            _refresh_icloud(mailbox)
+        except Exception:
+            # 上一批缓存仍可用于读取；上游恢复后下一次请求会继续同步。
+            pass
+    return _stored_messages(token)
+
+
+class MailboxReq(BaseModel):
+    email: str
+    source: str = "icloud-prime"
+    label: str = ""
+    icloud_url: str = ""
+    icloud_token: str = ""
+    icloud_account_id: str = ""
+
+
+@app.get("/api/health")
+def health(_: None = Depends(require_admin)):
+    with _conn() as con:
+        count = con.execute("SELECT COUNT(*) FROM mailboxes").fetchone()[0]
+    return {"ok": True, "service": "nexusflow-mail-hub", "mailboxes": count}
+
+
+@app.post("/api/mailboxes")
+def create_mailbox(req: MailboxReq, _: None = Depends(require_admin)):
+    email_addr = req.email.strip().lower()
+    if not email_addr or "@" not in email_addr:
+        raise HTTPException(400, "email 无效")
+    with _lock, _conn() as con:
+        row = con.execute(
+            "SELECT * FROM mailboxes WHERE email=? AND source=?",
+            (email_addr, req.source),
+        ).fetchone()
+        token = row["token"] if row else secrets.token_urlsafe(24)
+        if row:
+            con.execute(
+                "UPDATE mailboxes SET label=?,icloud_url=?,icloud_token=?,icloud_account=? WHERE token=?",
+                (
+                    req.label,
+                    req.icloud_url.rstrip("/"),
+                    req.icloud_token,
+                    req.icloud_account_id,
+                    token,
+                ),
+            )
+        else:
+            con.execute(
+                "INSERT INTO mailboxes"
+                "(token,email,source,label,icloud_url,icloud_token,icloud_account,created_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    token,
+                    email_addr,
+                    req.source,
+                    req.label,
+                    req.icloud_url.rstrip("/"),
+                    req.icloud_token,
+                    req.icloud_account_id,
+                    time.time(),
+                ),
+            )
+    return {
+        "ok": True,
+        "email": email_addr,
+        "token": token,
+        "relay_url": f"{PUBLIC_URL}/mail/{token}",
+    }
+
+
+@app.get("/api/mailboxes/{token}/messages")
+def mailbox_messages(
+    token: str,
+    refresh: bool = Query(True),
+    _: None = Depends(require_admin),
+):
+    return {"ok": True, "messages": _messages_for(token, refresh)}
+
+
+@app.get("/mail/{token}", response_class=HTMLResponse)
+def relay_page(token: str):
+    messages = _messages_for(token, refresh=True)
+    mailbox = _get_mailbox(token) or {}
+    cards = []
+    for item in messages:
+        otp = item.get("otp") or ""
+        code_html = f"<div class=\"otp\"><span>{html.escape(otp)}</span></div>" if otp else ""
+        cards.append(
+            "<article>"
+            f"<header><b>{html.escape(item.get('subject') or '(无主题)')}</b>"
+            f"<time>{html.escape(str(item.get('date') or ''))}</time></header>"
+            f"<p class=\"from\">{html.escape(item.get('from') or '')}"
+            f" → {html.escape(item.get('to') or mailbox.get('email') or '')}</p>"
+            f"{code_html}<pre>{html.escape(item.get('body') or '')}</pre>"
+            "</article>"
+        )
+    if not cards:
+        cards.append("<article class=\"empty\">收件箱暂时为空，等待新邮件。</article>")
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NexusFlow Mail Relay</title>
+<style>
+body{{font-family:ui-sans-serif,system-ui;background:#0b1020;color:#e8eefc;margin:0;padding:28px}}
+main{{max-width:920px;margin:auto}}h1{{font-size:22px}}#email{{color:#8cafff}}
+article{{background:#141b30;border:1px solid #263251;border-radius:12px;padding:16px;margin:12px 0}}
+header{{display:flex;justify-content:space-between;gap:12px}}time,.from{{color:#8d9ab7;font-size:13px}}
+pre{{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;line-height:1.55}}
+.otp span{{display:inline-block;font-size:28px;letter-spacing:8px;color:#78e6b1;font-weight:700}}
+.empty{{text-align:center;color:#8d9ab7}}
+</style></head><body><main>
+<h1>NexusFlow 邮件中转</h1><p id="email">{html.escape(mailbox.get('email') or '')}</p>
+{''.join(cards)}</main></body></html>"""
+
+
+class SMTPHandler:
+    async def handle_DATA(self, server, session, envelope):
+        raw = envelope.content.decode("utf-8", errors="replace")
+        parsed = email.message_from_string(raw, policy=email.policy.default)
+        subject = str(parsed.get("Subject") or "")
+        sender = str(parsed.get("From") or "")
+        message_id = str(parsed.get("Message-ID") or f"smtp:{time.time()}:{sender}")
+        body = ""
+        if parsed.is_multipart():
+            for part in parsed.walk():
+                if part.get_content_type() == "text/plain":
+                    body += part.get_content()
+                    break
+        else:
+            try:
+                body = parsed.get_content()
+            except Exception:
+                body = parsed.get_payload(decode=True).decode("utf-8", errors="replace")
+        for recipient in envelope.rcpt_tos:
+            with _conn() as con:
+                mailbox = con.execute(
+                    "SELECT token FROM mailboxes WHERE email=lower(?)",
+                    (recipient.lower(),),
+                ).fetchone()
+            if mailbox:
+                _store_message(
+                    mailbox["token"],
+                    f"smtp:{message_id}",
+                    sender,
+                    recipient,
+                    subject,
+                    body,
+                )
+        return "250 Message accepted for delivery"
+
+
+_smtp_controller: Optional[Controller] = None
+
+
+@app.on_event("startup")
+def start_services() -> None:
+    global _smtp_controller
+    init_db()
+    if SMTP_PORT > 0 and _smtp_controller is None:
+        _smtp_controller = Controller(SMTPHandler(), hostname=SMTP_HOST, port=SMTP_PORT)
+        _smtp_controller.start()
+
+
+@app.on_event("shutdown")
+def stop_services() -> None:
+    global _smtp_controller
+    if _smtp_controller is not None:
+        _smtp_controller.stop()
+        _smtp_controller = None
+
+
+init_db()

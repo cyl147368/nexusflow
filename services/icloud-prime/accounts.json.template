@@ -1,0 +1,18 @@
+{
+  "accounts": {
+    "acc_1": {
+      "id": "acc_1",
+      "name": "Example account",
+      "host": "icloud.com",
+      "cookies": {
+        "X-APPLE-WEBAUTH-TOKEN": "PASTE_YOUR_COOKIE_VALUE_HERE",
+        "X-APPLE-WEBAUTH-USER": "PASTE_YOUR_COOKIE_VALUE_HERE",
+        "X-APPLE-DS-WEB-SESSION-TOKEN": "PASTE_YOUR_COOKIE_VALUE_HERE"
+      },
+      "icloud_email": "your_email@icloud.com",
+      "app_password": "xxxx-xxxx-xxxx-xxxx",
+      "proxy": "",
+      "status": "pending"
+    }
+  }
+}

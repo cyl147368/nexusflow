@@ -1,0 +1,10 @@
+.git
+.github
+webui/webui.db*
+webui/logs
+webui/frontend/node_modules
+webui/static
+**/__pycache__
+*.pyc
+.env
+data

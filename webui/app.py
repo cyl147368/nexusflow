@@ -11,6 +11,8 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import secrets
 import sys
 import time
 import uuid
@@ -25,7 +27,7 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from . import db, export_formats, registrar  # noqa: E402
+from . import db, export_formats, integration, registrar  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
 from .exporter import _decode_jwt_payload, _get_auth  # noqa: E402
 from mail_providers import (  # noqa: E402
@@ -55,6 +57,33 @@ logger = logging.getLogger("webui")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+    """生产部署可选的 HTTP Basic 保护。
+
+    未设置 NEXUSFLOW_BASIC_PASSWORD 时保持原项目的本地开发体验；
+    一键部署会生成强密码并通过环境变量启用。
+    """
+    password = os.getenv("NEXUSFLOW_BASIC_PASSWORD", "")
+    if not password:
+        return await call_next(request)
+    user = os.getenv("NEXUSFLOW_BASIC_USER", "admin")
+    header = request.headers.get("authorization", "")
+    if header.startswith("Basic "):
+        try:
+            decoded = base64.b64decode(header[6:]).decode("utf-8")
+            got_user, got_password = decoded.split(":", 1)
+            if secrets.compare_digest(got_user, user) and secrets.compare_digest(got_password, password):
+                return await call_next(request)
+        except (ValueError, UnicodeDecodeError):
+            pass
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Unauthorized"},
+        headers={"WWW-Authenticate": 'Basic realm="NexusFlow"'},
+    )
 
 
 # ──────────────────────── Pydantic 模型 ────────────────────────
@@ -1087,6 +1116,113 @@ async def api_auto_stream(request: Request):
     )
 
 
+# ──────────────────────── NexusFlow 一体化流程 ────────────────────────
+
+
+class IntegrationConfigReq(BaseModel):
+    mailhub_url: Optional[str] = None
+    mailhub_token: Optional[str] = None
+    icloud_url: Optional[str] = None
+    icloud_token: Optional[str] = None
+    icloud_account_id: Optional[str] = None
+    proxy: Optional[str] = None
+    otp_timeout: Optional[int] = None
+    want_access_token: Optional[bool] = None
+    want_session_token: Optional[bool] = None
+    want_refresh_token: Optional[bool] = None
+    want_2fa: Optional[bool] = None
+
+
+class ICloudAccountReq(BaseModel):
+    account_id: Optional[str] = None
+    name: Optional[str] = "NexusFlow iCloud"
+    host: Optional[str] = "icloud.com"
+    real_email: Optional[str] = ""
+    icloud_email: Optional[str] = ""
+    cookies: Optional[str] = ""
+    password: Optional[str] = ""
+    otp_code: Optional[str] = ""
+    app_password: Optional[str] = ""
+    proxy: Optional[str] = ""
+
+
+class ICloudAliasDeleteReq(BaseModel):
+    account_id: Optional[str] = None
+    anonymous_id: str
+
+
+@app.get("/api/integration/config")
+def api_integration_config():
+    return {"ok": True, "config": db.get_integration_config(), "job": integration.get_job()}
+
+
+@app.post("/api/integration/config")
+def api_integration_save(req: IntegrationConfigReq):
+    db.save_integration_config(req.model_dump(exclude_none=True))
+    return {"ok": True, "config": db.get_integration_config()}
+
+
+@app.post("/api/integration/test/mailhub")
+def api_integration_test_mailhub():
+    try:
+        return integration.test_mailhub()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/test/icloud")
+def api_integration_test_icloud():
+    try:
+        return integration.test_icloud()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/integration/icloud/accounts")
+def api_integration_icloud_accounts():
+    try:
+        return integration.test_icloud()
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/icloud/account")
+def api_integration_icloud_account(req: ICloudAccountReq):
+    try:
+        return integration.create_or_update_icloud_account(req.model_dump(exclude_none=True))
+    except (integration.IntegrationError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/integration/icloud/aliases")
+def api_integration_icloud_aliases(account_id: str = ""):
+    try:
+        return integration.list_icloud_aliases(account_id)
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/icloud/aliases/delete")
+def api_integration_icloud_alias_delete(req: ICloudAliasDeleteReq):
+    try:
+        return integration.delete_icloud_alias(req.account_id or "", req.anonymous_id)
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/start")
+def api_integration_start():
+    try:
+        return {"ok": True, "job": integration.start_pipeline()}
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/integration/status")
+def api_integration_status():
+    return {"ok": True, "job": integration.get_job(), "stats": db.stats()}
+
+
 # ──────────────────────── 静态资源 ────────────────────────
 
 
@@ -1100,4 +1236,9 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("webui.app:app", host="127.0.0.1", port=8765, reload=False)
+    uvicorn.run(
+        "webui.app:app",
+        host=os.getenv("NEXUSFLOW_HOST", "127.0.0.1"),
+        port=int(os.getenv("NEXUSFLOW_PORT", "8765")),
+        reload=False,
+    )

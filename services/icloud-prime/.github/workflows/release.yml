@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.2"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  portable:
+    name: Build Windows 10 portable package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI
+        working-directory: web
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build Windows binary
+        shell: pwsh
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -ldflags="-s -w" -o icloud-prime.exe .
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          .\scripts\package-windows10.ps1 -Version $version -BinaryPath .\icloud-prime.exe
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: iCloud Prime ${{ github.event.inputs.tag || github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
+          body_path: build/release/${{ github.event.inputs.tag || github.ref_name }}-notes.md
+          files: build/release/*.zip

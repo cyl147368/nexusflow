@@ -1,0 +1,12 @@
+NexusFlow includes and adapts the following upstream projects:
+
+1. gpt-auto-register
+   Copyright and attribution: https://github.com/Regert888/gpt-auto-register
+   License: GNU Affero General Public License v3.0 (see LICENSE)
+
+2. iCloud Prime
+   Copyright and attribution: https://github.com/forever94yu/icloud-prime
+   License: MIT (see services/icloud-prime/LICENSE)
+
+The original upstream license files and notices are preserved. NexusFlow's
+combined distribution is provided under the AGPL-3.0 terms of the main project.

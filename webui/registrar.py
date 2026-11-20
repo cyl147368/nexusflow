@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import sys
 import threading
@@ -44,7 +45,7 @@ _lock = threading.Lock()
 #    一个 run 的日志全在自己那条线程上产生，所以线程绑定就能干净切开。
 _current_run = threading.local()
 
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR = Path(os.getenv("NEXUSFLOW_LOG_DIR", Path(__file__).resolve().parent / "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 

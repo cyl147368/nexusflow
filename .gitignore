@@ -13,6 +13,9 @@ webui/logs/
 *.sqlite3
 run.log
 run*.log
+mailhub.db
+mailhub.db-*
+services/mail-hub/*.db
 account_*.json
 *.session
 *.token

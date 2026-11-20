@@ -61,7 +61,7 @@ onMounted(() => {
     <el-aside :width="collapse ? '64px' : '220px'" class="sidebar">
       <div class="brand" :class="{ mini: collapse }">
         <span class="logo"><el-icon :size="18"><Platform /></el-icon></span>
-        <span v-if="!collapse" class="brand-name">Outlook Register</span>
+        <span v-if="!collapse" class="brand-name">NexusFlow</span>
       </div>
       <el-scrollbar>
         <el-menu :default-active="activeMenu" router :collapse="collapse" class="side-menu">
@@ -123,9 +123,7 @@ onMounted(() => {
         <div v-if="!adDismissed" class="ad-banner">
           <div class="ad-content">
             <el-icon :size="16" style="color: #e6a23c; flex-shrink: 0"><Bell /></el-icon>
-            <span>交流QQ群：<b>259844673</b></span>
-            <span class="ad-sep">|</span>
-            <span>推荐服务器：<a href="http://www.ransuyun.com" target="_blank" rel="noopener">燃速云</a></span>
+            <span>NexusFlow 一体化编排：iCloud 隐藏邮箱 → 邮件中转 → OpenAI 自动注册</span>
           </div>
           <el-button text size="small" class="ad-close" @click="adDismissed = true">
             <el-icon :size="14"><Close /></el-icon>
