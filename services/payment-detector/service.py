@@ -106,6 +106,14 @@ def _require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(401, "未授权")
 
 
+def _normalize_proxy(value: str) -> str:
+    """Resolve SOCKS targets remotely, consistently with the registrar."""
+    text = str(value or "").strip()
+    if text.startswith("socks5://"):
+        return "socks5h://" + text[len("socks5://"):]
+    return text
+
+
 def _account_from_row(row: sqlite3.Row) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     try:
@@ -325,7 +333,10 @@ def start_check(req: CheckReq, _: None = Depends(_require_admin)):
     methods = _normalize_methods(req.methods)
     if not methods:
         raise HTTPException(400, "methods 仅支持 momo / upi")
-    proxies = {key: str(value or "").strip() for key, value in (req.proxies or {}).items()}
+    proxies = {
+        key: _normalize_proxy(value)
+        for key, value in (req.proxies or {}).items()
+    }
     missing = [method for method in methods if not proxies.get(method)]
     if missing:
         raise HTTPException(400, "缺少地区出口代理：" + "、".join(missing))

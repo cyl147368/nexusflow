@@ -77,6 +77,14 @@ class PaymentDetectorTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("momo", response.text)
 
+    def test_socks5_proxy_is_normalized_for_remote_dns(self):
+        from service import _normalize_proxy
+
+        self.assertEqual(
+            _normalize_proxy("socks5://user:pass@127.0.0.1:1080"),
+            "socks5h://user:pass@127.0.0.1:1080",
+        )
+
     def test_started_run_is_persisted_immediately(self):
         headers = {"Authorization": "Bearer test-token"}
         with patch("service._run_qualification"):
