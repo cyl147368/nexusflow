@@ -1776,6 +1776,7 @@ class AuthFlow:
             except Exception:
                 cookies = {}
             if "oai-did" in cookies:
+                self.result.device_id = str(cookies.get("oai-did") or "").strip()
                 logger.info(
                     f"chatgpt.com warmup 完成（第 {attempt + 1} 次，oai-did 已种，"
                     f"共 {len(cookies)} 个 cookie）"
@@ -1888,6 +1889,13 @@ class AuthFlow:
         logger.info("[2/10] 获取 OpenAI 授权地址...")
         headers = self._common_headers("https://chatgpt.com/auth/login")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
+        if not self.result.device_id:
+            try:
+                self.result.device_id = str(
+                    self.session.cookies.get("oai-did", "") or ""
+                ).strip()
+            except Exception:
+                self.result.device_id = ""
         if not self.result.device_id:
             self.result.device_id = str(uuid.uuid4())
         query_params: dict[str, str] = {
