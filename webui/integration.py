@@ -646,7 +646,13 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             ))
         except IntegrationError as exc:
             message = str(exc)
-            if "429" not in message and "额度" not in message:
+            quota_markers = (
+                "429",
+                "额度",
+                "reached the limit",
+                "limit of addresses",
+            )
+            if not any(marker in message.lower() for marker in quota_markers):
                 raise
             fallback = _reusable_icloud_alias()
             if not fallback:
