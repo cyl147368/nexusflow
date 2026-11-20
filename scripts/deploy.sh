@@ -40,6 +40,6 @@ echo
 echo "[NexusFlow] Deployment complete"
 echo "  Main UI:  http://${PUBLIC_IP}:8770/"
 echo "  Mail Hub: http://${PUBLIC_IP}:8090/api/health (Bearer token required)"
-echo "  Login:    $(grep '^NEXUSFLOW_BASIC_USER=' .env | cut -d= -f2-) / $(grep '^NEXUSFLOW_BASIC_PASSWORD=' .env | cut -d= -f2-)"
+echo "  Login user: $(grep '^NEXUSFLOW_BASIC_USER=' .env | cut -d= -f2-)"
 echo
-echo "The generated credentials are stored in $ROOT/.env (mode 600)."
+echo "The generated password is stored in $ROOT/.env (mode 600) and is never printed to CI logs."

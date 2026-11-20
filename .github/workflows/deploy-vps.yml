@@ -36,11 +36,12 @@ jobs:
           SSH_HOST: ${{ secrets.NEXUSFLOW_SSH_HOST }}
           SSH_USER: ${{ secrets.NEXUSFLOW_SSH_USER }}
           SSH_PASSWORD: ${{ secrets.NEXUSFLOW_SSH_PASSWORD }}
+          BASIC_PASS_OVERRIDE: ${{ secrets.NEXUSFLOW_BASIC_PASSWORD_OVERRIDE }}
         run: |
           sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=20 -o ServerAliveInterval=20 \
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-            "${SSH_USER}@${SSH_HOST}" 'bash -s' <<'REMOTE'
+            "${SSH_USER}@${SSH_HOST}" "BASIC_PASS_OVERRIDE='${BASIC_PASS_OVERRIDE}' bash -s" <<'REMOTE'
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           if ! command -v docker >/dev/null 2>&1; then
@@ -57,5 +58,9 @@ jobs:
           cd /opt/nexusflow
           chmod +x scripts/deploy.sh
           NEXUSFLOW_PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)" ./scripts/deploy.sh
+          if [ -n "${BASIC_PASS_OVERRIDE:-}" ]; then
+            sed -i "s|^NEXUSFLOW_BASIC_PASSWORD=.*|NEXUSFLOW_BASIC_PASSWORD=${BASIC_PASS_OVERRIDE}|" .env
+            docker compose up -d --force-recreate nexusflow
+          fi
           docker compose ps
           REMOTE
