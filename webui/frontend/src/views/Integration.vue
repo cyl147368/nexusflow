@@ -169,14 +169,16 @@ async function loadAliases() {
 }
 
 async function removeAlias(alias) {
-  const id = alias.anonymous_id || alias.id
+  const id = alias.anonymousId || alias.anonymous_id || alias.id
   if (!id) return
   try {
     await deleteICloudAlias({
       account_id: form.value.icloud_account_id,
       anonymous_id: id,
     })
-    aliases.value = aliases.value.filter((item) => (item.anonymous_id || item.id) !== id)
+    aliases.value = aliases.value.filter(
+      (item) => (item.anonymousId || item.anonymous_id || item.id) !== id,
+    )
     ElMessage.success('iCloud 隐藏邮箱已删除')
   } catch (e) {
     ElMessage.error(e.message)

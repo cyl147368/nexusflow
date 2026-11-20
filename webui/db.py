@@ -1053,10 +1053,10 @@ def get_integration_config() -> dict:
         "icloud_account_id": get_setting("nx_icloud_account_id", ""),
         "proxy": get_setting("nx_proxy", ""),
         "otp_timeout": get_setting("nx_otp_timeout", "180"),
-        "want_access_token": get_setting("nx_want_access_token", "1"),
-        "want_session_token": get_setting("nx_want_session_token", "1"),
-        "want_refresh_token": get_setting("nx_want_refresh_token", "1"),
-        "want_2fa": get_setting("nx_want_2fa", "0"),
+        "want_access_token": get_setting("nx_want_access_token", "1") in ("1", "true"),
+        "want_session_token": get_setting("nx_want_session_token", "1") in ("1", "true"),
+        "want_refresh_token": get_setting("nx_want_refresh_token", "1") in ("1", "true"),
+        "want_2fa": get_setting("nx_want_2fa", "0") in ("1", "true"),
     }
 
 
