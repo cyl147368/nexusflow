@@ -35,10 +35,11 @@ jobs:
           ADMIN_PASSWORD: ${{ secrets.NEXUSFLOW_ADMIN_PASSWORD }}
           ACTION: ${{ inputs.action }}
         run: |
+          ADMIN_PASSWORD_B64="$(printf '%s' "$ADMIN_PASSWORD" | base64 -w0)"
           sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
             -o ConnectTimeout=20 -o ServerAliveInterval=20 \
             -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-            "${SSH_USER}@${SSH_HOST}" "ACTION='${ACTION}' bash -s" <<'REMOTE'
+            "${SSH_USER}@${SSH_HOST}" "ACTION='${ACTION}' ADMIN_PASSWORD_B64='${ADMIN_PASSWORD_B64}' bash -s" <<'REMOTE'
           set -euo pipefail
           echo "===== DOCKER CONTAINERS ====="
           docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
@@ -82,7 +83,8 @@ jobs:
           fi
 
           if [ "$ACTION" = "set-admin-password" ]; then
-            test -n "${ADMIN_PASSWORD:-}"
+            test -n "${ADMIN_PASSWORD_B64:-}"
+            ADMIN_PASSWORD="$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 -d)"
             cd /opt/nexusflow
             sed -i "s|^NEXUSFLOW_BASIC_PASSWORD=.*|NEXUSFLOW_BASIC_PASSWORD=${ADMIN_PASSWORD}|" .env
             docker compose up -d --force-recreate nexusflow
