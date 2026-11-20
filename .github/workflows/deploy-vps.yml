@@ -1,0 +1,61 @@
+name: Deploy NexusFlow to VPS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH client
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Test server access
+        env:
+          SSH_HOST: ${{ secrets.NEXUSFLOW_SSH_HOST }}
+          SSH_USER: ${{ secrets.NEXUSFLOW_SSH_USER }}
+          SSH_PASSWORD: ${{ secrets.NEXUSFLOW_SSH_PASSWORD }}
+        run: |
+          test -n "$SSH_HOST"
+          test -n "$SSH_USER"
+          test -n "$SSH_PASSWORD"
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=20 -o PreferredAuthentications=password \
+            -o PubkeyAuthentication=no "${SSH_USER}@${SSH_HOST}" \
+            'hostname && uname -a && command -v docker || true'
+
+      - name: Deploy
+        env:
+          SSH_HOST: ${{ secrets.NEXUSFLOW_SSH_HOST }}
+          SSH_USER: ${{ secrets.NEXUSFLOW_SSH_USER }}
+          SSH_PASSWORD: ${{ secrets.NEXUSFLOW_SSH_PASSWORD }}
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=20 -o ServerAliveInterval=20 \
+            -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+            "${SSH_USER}@${SSH_HOST}" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          if ! command -v docker >/dev/null 2>&1; then
+            curl -fsSL https://get.docker.com | sh
+          fi
+          systemctl enable --now docker
+          install -d -m 0750 /opt/nexusflow
+          if [ -d /opt/nexusflow/.git ]; then
+            git -C /opt/nexusflow fetch origin main
+            git -C /opt/nexusflow reset --hard origin/main
+          else
+            git clone https://github.com/cyl147368/nexusflow.git /opt/nexusflow
+          fi
+          cd /opt/nexusflow
+          chmod +x scripts/deploy.sh
+          NEXUSFLOW_PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)" ./scripts/deploy.sh
+          docker compose ps
+          REMOTE
