@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onActivated, onDeactivated, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { storeToRefs } from 'pinia'
 import {
   createICloudAccount,
   deleteICloudAlias,
@@ -18,6 +19,7 @@ import {
   testReceiver,
 } from '@/api/integration'
 import { copyText, fmtTime } from '@/api/request'
+import { useProxyStore } from '@/stores/proxy'
 
 const loading = ref(true)
 const saving = ref(false)
@@ -35,6 +37,8 @@ const aliasPage = ref(1)
 const aliasPageSize = ref(20)
 const aliasActionBusy = ref('')
 const job = ref({ status: 'idle', stage: 'idle', logs: [] })
+const proxyStore = useProxyStore()
+const { list: proxyPool } = storeToRefs(proxyStore)
 let timer = null
 
 const form = ref({
@@ -640,8 +644,23 @@ startPolling()
           <div class="card-head"><span>3. 主项目注册参数</span></div>
         </template>
         <el-form label-position="top">
-          <el-form-item label="代理 URL">
-            <el-input v-model="form.proxy" placeholder="socks5://user:pass@host:port，可留空" />
+          <el-form-item label="注册代理">
+            <el-select
+              v-model="form.proxy"
+              filterable clearable allow-create default-first-option
+              placeholder="从代理池选择，或直接输入新代理"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="proxy in proxyPool"
+                :key="proxy"
+                :label="proxy"
+                :value="proxy"
+              />
+            </el-select>
+            <div class="hint proxy-hint">
+              代理池共 {{ proxyPool.length }} 条。下拉选择本次注册出口，留空则直连。
+            </div>
           </el-form-item>
           <el-form-item label="OTP 超时（秒）">
             <el-input-number v-model="form.otp_timeout" :min="60" :max="600" />
@@ -653,6 +672,10 @@ startPolling()
             <el-checkbox v-model="form.want_2fa">注册后绑定 2FA</el-checkbox>
           </div>
         </el-form>
+        <el-alert
+          type="info" :closable="false" show-icon class="single-run-tip"
+          title="当前一键启动为单轮：创建 1 个隐藏邮箱并注册 1 次，完成后停止。"
+        />
       </el-card>
 
       <el-card shadow="never" class="run-card">
@@ -705,6 +728,8 @@ startPolling()
 .account-form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 16px; }
 .account-form :deep(.el-form-item:nth-child(6)) { grid-column: 1 / -1; }
 .switches { display: flex; gap: 10px; flex-wrap: wrap; }
+.proxy-hint { margin-top: 5px; }
+.single-run-tip { margin-top: 10px; }
 .run-card { border: 1px solid var(--el-color-primary-light-7); }
 .run-meta { display: grid; gap: 10px; margin-bottom: 16px; }
 .run-meta div { display: grid; grid-template-columns: 100px 1fr; gap: 10px; }
