@@ -7,13 +7,17 @@ import {
   deleteICloudAlias,
   getIntegrationConfig,
   getIntegrationStatus,
+  getMailboxDiagnostics,
   getMailHubInfo,
   listICloudAliases,
   listICloudAccounts,
   normalizeCookie,
+  pauseIntegration,
+  resumeIntegration,
   saveIntegrationConfig,
   setICloudAliasState,
   startIntegration,
+  stopIntegration,
   testICloud,
   testMailHub,
   testReceiver,
@@ -39,6 +43,7 @@ const aliasPageSize = ref(20)
 const aliasActionBusy = ref('')
 const registeredTotal = ref(0)
 const job = ref({ status: 'idle', stage: 'idle', logs: [] })
+const mailboxDiagnostic = ref(null)
 const proxyStore = useProxyStore()
 const { list: proxyPool } = storeToRefs(proxyStore)
 let timer = null
@@ -62,6 +67,12 @@ const form = ref({
   want_session_token: true,
   want_refresh_token: true,
   want_2fa: false,
+  continuous: true,
+  target_count: 0,
+  cool_down_seconds: 30,
+  auto_qualify: true,
+  momo_proxy: '',
+  upi_proxy: '',
 })
 
 const accountForm = ref({
@@ -78,6 +89,9 @@ const accountForm = ref({
 
 const statusType = computed(() => ({
   done: 'success',
+  stopped: 'info',
+  paused: 'info',
+  stopping: 'danger',
   running: 'warning',
   failed: 'danger',
 }[job.value.status] || 'info'))
@@ -96,7 +110,21 @@ const stageLabel = computed(() => ({
   failed: '流程失败',
   registration_failed: '注册失败',
   registration_timeout: '等待注册超时',
+  cycle_completed: '本轮注册完成',
+  cycle_failed: '本轮失败，准备重试',
+  cooling_down: '等待下一轮',
+  pause_requested: '暂停中',
+  paused: '已暂停',
+  resuming_loop: '恢复连续流程',
+  stopping: '正在停止',
+  stopped: '已停止',
+  target_reached: '已达到目标',
 }[job.value.stage] || job.value.stage))
+
+const paused = computed(() => job.value.status === 'paused')
+const canStart = computed(
+  () => !['running', 'paused', 'stopping'].includes(job.value.status),
+)
 
 const filteredAliases = computed(() => {
   const keyword = aliasSearch.value.trim().toLowerCase()
@@ -344,13 +372,28 @@ async function refreshStatus() {
   try {
     const r = await getIntegrationStatus()
     const previousStatus = job.value.status
+    const previousSuccesses = Number(job.value.success_count || 0)
     job.value = r.job || job.value
-    running.value = job.value.status === 'running'
-    if (job.value.status === 'done' && previousStatus !== 'done') {
+    running.value = ['running', 'paused', 'stopping'].includes(job.value.status)
+    if (
+      Number(job.value.success_count || 0) > previousSuccesses
+      || (job.value.status === 'done' && previousStatus !== 'done')
+    ) {
       await loadRegisteredCount()
     }
   } catch (_) {
     // 轮询失败不打断当前页面。
+  }
+}
+
+async function inspectMailbox() {
+  const token = job.value.mailbox?.token
+  if (!token) return ElMessage.warning('当前任务还没有邮件中转 token')
+  try {
+    mailboxDiagnostic.value = await getMailboxDiagnostics(token)
+    ElMessage.success('已刷新收件箱诊断')
+  } catch (e) {
+    ElMessage.error(e.message)
   }
 }
 
@@ -363,6 +406,38 @@ async function start() {
     activeStep.value = 2
     startPolling()
     ElMessage.success('一体化流程已启动')
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
+async function pauseFlow() {
+  try {
+    const r = await pauseIntegration()
+    job.value = r.job || job.value
+    running.value = true
+    ElMessage.success('已暂停，不会再创建新邮箱')
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
+async function resumeFlow() {
+  try {
+    const r = await resumeIntegration()
+    job.value = r.job || job.value
+    running.value = true
+    ElMessage.success('连续流程已恢复')
+  } catch (e) {
+    ElMessage.error(e.message)
+  }
+}
+
+async function stopFlow() {
+  try {
+    const r = await stopIntegration()
+    job.value = r.job || job.value
+    ElMessage.success('已请求停止，当前注册轮会安全收尾')
   } catch (e) {
     ElMessage.error(e.message)
   }
@@ -687,6 +762,30 @@ startPolling()
           <el-form-item label="OTP 超时（秒）">
             <el-input-number v-model="form.otp_timeout" :min="60" :max="600" />
           </el-form-item>
+          <el-form-item label="连续运行">
+            <el-switch v-model="form.continuous" active-text="自动开始下一轮" />
+          </el-form-item>
+          <div v-if="form.continuous" class="loop-settings">
+            <el-form-item label="目标成功数">
+              <el-input-number v-model="form.target_count" :min="0" :max="100000" />
+              <div class="hint">0 表示无限循环；达到目标后自动停止。</div>
+            </el-form-item>
+            <el-form-item label="轮次间隔（秒）">
+              <el-input-number v-model="form.cool_down_seconds" :min="0" :max="3600" />
+              <div class="hint">失败时会自动指数退避，避免持续空转。</div>
+            </el-form-item>
+          </div>
+          <el-form-item label="自动支付资格校验">
+            <el-switch v-model="form.auto_qualify" active-text="注册成功后自动检测" />
+          </el-form-item>
+          <div v-if="form.auto_qualify" class="loop-settings">
+            <el-form-item label="MoMo 越南出口">
+              <el-input v-model="form.momo_proxy" placeholder="留空则跳过 MoMo" />
+            </el-form-item>
+            <el-form-item label="UPI 印度出口">
+              <el-input v-model="form.upi_proxy" placeholder="留空则跳过 UPI" />
+            </el-form-item>
+          </div>
           <div class="switches">
             <el-checkbox v-model="form.want_access_token">Access Token</el-checkbox>
             <el-checkbox v-model="form.want_session_token">Session Token</el-checkbox>
@@ -696,7 +795,7 @@ startPolling()
         </el-form>
         <el-alert
           type="info" :closable="false" show-icon class="single-run-tip"
-          title="当前一键启动为单轮：创建 1 个隐藏邮箱并注册 1 次，完成后停止。"
+          title="连续模式会逐轮创建隐藏邮箱并注册；暂停和停止都在当前注册轮结束后生效。"
         />
       </el-card>
 
@@ -704,15 +803,34 @@ startPolling()
         <template #header>
           <div class="card-head">
             <span>运行状态</span>
-            <el-tag :type="statusType" size="small">{{ job.status || 'idle' }}</el-tag>
+            <div class="run-head-actions">
+              <el-button
+                v-if="job.mailbox?.token"
+                size="small"
+                plain
+                @click="inspectMailbox"
+              >
+                收件诊断
+              </el-button>
+              <el-tag :type="statusType" size="small">{{ job.status || 'idle' }}</el-tag>
+            </div>
           </div>
         </template>
         <div class="run-meta">
           <div><span>当前阶段</span><b>{{ stageLabel }}</b></div>
           <div><span>累计注册成功</span><b>{{ registeredTotal }}</b></div>
+          <div v-if="job.cycle_no"><span>连续轮次</span><b>第 {{ job.cycle_no }} 轮</b></div>
+          <div v-if="job.success_count || job.failure_count">
+            <span>本次运行</span>
+            <b>成功 {{ job.success_count || 0 }} / 失败 {{ job.failure_count || 0 }}</b>
+          </div>
           <div v-if="job.email"><span>隐藏邮箱</span><b>{{ job.email }}</b></div>
           <div v-if="job.run_id"><span>主任务 Run ID</span><b>{{ job.run_id }}</b></div>
           <div v-if="job.relay_url"><span>取件链接</span><b class="break">{{ job.relay_url }}</b></div>
+          <div v-if="job.qualification_status">
+            <span>资格校验</span>
+            <b>{{ job.qualification_status }}</b>
+          </div>
           <div v-if="job.error"><span>错误</span><b class="error">{{ job.error }}</b></div>
         </div>
         <el-scrollbar height="220px" class="logs">
@@ -721,13 +839,41 @@ startPolling()
           </div>
           <div v-if="!(job.logs || []).length" class="hint">启动后这里显示阶段日志。</div>
         </el-scrollbar>
+        <el-collapse v-if="mailboxDiagnostic" class="diagnostic">
+          <el-collapse-item title="邮件收件诊断" name="mailbox">
+            <div class="diagnostic-summary">
+              扫描 {{ mailboxDiagnostic.sync?.scanned || 0 }} 封，
+              命中 {{ mailboxDiagnostic.sync?.matched || 0 }} 封，
+              状态 {{ mailboxDiagnostic.sync?.ok ? '正常' : '异常' }}
+            </div>
+            <pre>{{ JSON.stringify(mailboxDiagnostic, null, 2) }}</pre>
+          </el-collapse-item>
+        </el-collapse>
       </el-card>
     </div>
 
     <div class="actions">
       <el-button :loading="saving" @click="save()">保存全部配置</el-button>
-      <el-button type="primary" size="large" :loading="running" :disabled="running" @click="start">
+      <el-button v-if="job.status === 'running'" @click="pauseFlow">暂停</el-button>
+      <el-button v-if="paused" type="success" @click="resumeFlow">恢复</el-button>
+      <el-button
+        v-if="['running', 'paused'].includes(job.status)"
+        type="danger"
+        plain
+        @click="stopFlow"
+      >
+        停止
+      </el-button>
+      <el-button
+        v-if="canStart"
+        type="primary"
+        size="large"
+        @click="start"
+      >
         一键启动完整流程
+      </el-button>
+      <el-button v-else disabled size="large">
+        {{ job.status === 'stopping' ? '正在停止…' : '连续流程运行中' }}
       </el-button>
     </div>
   </div>
@@ -756,9 +902,15 @@ startPolling()
 .account-form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 16px; }
 .account-form :deep(.el-form-item:nth-child(6)) { grid-column: 1 / -1; }
 .switches { display: flex; gap: 10px; flex-wrap: wrap; }
+.loop-settings {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px;
+  padding: 12px; margin-bottom: 12px; border-radius: 10px;
+  background: var(--el-fill-color-lighter);
+}
 .proxy-hint { margin-top: 5px; }
 .single-run-tip { margin-top: 10px; }
 .run-card { border: 1px solid var(--el-color-primary-light-7); }
+.run-head-actions { display: flex; align-items: center; gap: 8px; }
 .run-meta { display: grid; gap: 10px; margin-bottom: 16px; }
 .run-meta div { display: grid; grid-template-columns: 100px 1fr; gap: 10px; }
 .run-meta span { color: var(--el-text-color-secondary); }
@@ -767,6 +919,12 @@ startPolling()
 .logs { background: var(--el-fill-color-lighter); border-radius: 8px; padding: 8px 12px; }
 .log-line { display: flex; gap: 12px; padding: 5px 0; font-size: 13px; }
 .log-line time { color: var(--el-text-color-secondary); white-space: nowrap; }
+.diagnostic { margin-top: 12px; }
+.diagnostic-summary { margin-bottom: 10px; color: var(--el-text-color-secondary); }
+.diagnostic pre {
+  max-height: 320px; overflow: auto; padding: 12px; border-radius: 8px;
+  background: var(--el-fill-color-lighter); font-size: 12px;
+}
 .actions {
   position: sticky; bottom: 12px; display: flex; justify-content: flex-end; gap: 12px;
   margin-top: 18px; padding: 14px 18px; border: 1px solid var(--el-border-color);
@@ -881,5 +1039,6 @@ code { color: var(--el-color-primary); }
   .mailhub-facts { grid-template-columns: 1fr; }
   .receiver-form :deep(.el-form) { grid-template-columns: 1fr 1fr; }
   .receiver-form :deep(.el-form-item:nth-child(4)) { grid-column: auto; }
+  .loop-settings { grid-template-columns: 1fr; }
 }
 </style>

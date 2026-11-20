@@ -16,4 +16,9 @@ export const deleteICloudAlias = (payload) =>
 export const setICloudAliasState = (payload) =>
   http.post('/api/integration/icloud/aliases/state', payload)
 export const startIntegration = () => http.post('/api/integration/start')
+export const pauseIntegration = () => http.post('/api/integration/pause')
+export const resumeIntegration = () => http.post('/api/integration/resume')
+export const stopIntegration = () => http.post('/api/integration/stop')
 export const getIntegrationStatus = () => http.get('/api/integration/status')
+export const getMailboxDiagnostics = (token) =>
+  http.get(`/api/integration/mailbox/${encodeURIComponent(token)}/diagnostics`)

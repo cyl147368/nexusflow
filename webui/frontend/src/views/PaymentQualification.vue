@@ -8,6 +8,10 @@ import {
   listPaymentResults,
   startPaymentCheck,
 } from '@/api/payment'
+import {
+  getIntegrationConfig,
+  saveIntegrationConfig,
+} from '@/api/integration'
 import { fmtTime } from '@/api/request'
 
 const loading = ref(true)
@@ -53,14 +57,17 @@ function stateLabel(item) {
 async function load() {
   loading.value = true
   try {
-    const [h, c, r] = await Promise.all([
+    const [h, c, r, cfg] = await Promise.all([
       getPaymentHealth(),
       listPaymentCandidates(),
       listPaymentResults(),
+      getIntegrationConfig(),
     ])
     health.value = h
     candidates.value = c.items || []
     results.value = r.items || []
+    proxies.value.momo = cfg.config?.momo_proxy || ''
+    proxies.value.upi = cfg.config?.upi_proxy || ''
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
@@ -87,6 +94,10 @@ async function start() {
   }
   starting.value = true
   try {
+    await saveIntegrationConfig({
+      momo_proxy: proxies.value.momo.trim(),
+      upi_proxy: proxies.value.upi.trim(),
+    })
     const r = await startPaymentCheck({
       emails: selected.value,
       methods: methods.value,

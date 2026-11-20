@@ -1147,6 +1147,13 @@ def get_integration_config() -> dict:
         "want_session_token": get_setting("nx_want_session_token", "1") in ("1", "true"),
         "want_refresh_token": get_setting("nx_want_refresh_token", "1") in ("1", "true"),
         "want_2fa": get_setting("nx_want_2fa", "0") in ("1", "true"),
+        "continuous": get_setting("nx_continuous", "1") in ("1", "true"),
+        "target_count": get_setting("nx_target_count", "0"),
+        "cool_down_seconds": get_setting("nx_cool_down_seconds", "30"),
+        "auto_qualify": get_setting("nx_auto_qualify", "1") in ("1", "true"),
+        "momo_proxy": get_setting("nx_momo_proxy", ""),
+        "upi_proxy": get_setting("nx_upi_proxy", ""),
+        "payment_timeout": get_setting("nx_payment_timeout", "45"),
     }
 
 
@@ -1162,10 +1169,23 @@ def get_integration_internal_config() -> dict:
     cfg["imap_password"] = get_setting("nx_imap_password", "")
     cfg["imap_ssl"] = get_setting("nx_imap_ssl", "1") in ("1", "true")
     cfg["otp_timeout"] = int(get_setting("nx_otp_timeout", "180") or 180)
+    cfg["target_count"] = max(0, int(get_setting("nx_target_count", "0") or 0))
+    cfg["cool_down_seconds"] = max(
+        0, min(3600, int(get_setting("nx_cool_down_seconds", "30") or 30))
+    )
+    cfg["payment_timeout"] = max(
+        10, min(180, int(get_setting("nx_payment_timeout", "45") or 45))
+    )
     for key in ("want_access_token", "want_session_token", "want_refresh_token", "want_2fa"):
         cfg[key] = get_setting(f"nx_{key}", "0" if key == "want_2fa" else "1") in (
             "1", "true", "yes", "on",
         )
+    cfg["continuous"] = get_setting("nx_continuous", "1") in (
+        "1", "true", "yes", "on",
+    )
+    cfg["auto_qualify"] = get_setting("nx_auto_qualify", "1") in (
+        "1", "true", "yes", "on",
+    )
     return cfg
 
 
@@ -1174,6 +1194,8 @@ def save_integration_config(data: dict) -> None:
     for key in (
         "mailhub_url", "icloud_url", "icloud_account_id", "receiver_mode",
         "imap_host", "imap_port", "imap_email", "imap_folder", "proxy", "otp_timeout",
+        "target_count", "cool_down_seconds", "momo_proxy", "upi_proxy",
+        "payment_timeout",
     ):
         if key in data:
             set_setting(f"nx_{key}", str(data.get(key) or "").strip())
@@ -1189,7 +1211,10 @@ def save_integration_config(data: dict) -> None:
             "1", "true", "yes", "on",
         )
         set_setting("nx_imap_ssl", "1" if enabled else "0")
-    for key in ("want_access_token", "want_session_token", "want_refresh_token", "want_2fa"):
+    for key in (
+        "want_access_token", "want_session_token", "want_refresh_token", "want_2fa",
+        "continuous", "auto_qualify",
+    ):
         if key in data:
             value = data[key]
             enabled = value if isinstance(value, bool) else str(value).lower() in (

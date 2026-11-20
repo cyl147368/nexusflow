@@ -1,6 +1,8 @@
 import os
 import tempfile
 import unittest
+import email
+import email.policy
 from pathlib import Path
 
 
@@ -59,6 +61,19 @@ class MailHubApiTest(unittest.TestCase):
         self.assertEqual(body["smtp_port"], 0)
         self.assertFalse(body["smtp_enabled"])
         self.assertEqual(body["default_source"], "icloud-prime")
+
+    def test_forwarded_alias_can_be_found_outside_to_header(self):
+        from service import _message_recipients
+
+        message = email.message_from_string(
+            "From: sender@example.com\n"
+            "To: receiver@qq.com\n"
+            "Delivered-To: hidden.alias@icloud.com\n"
+            "Subject: verification\n\n"
+            "Your code is 654321\n",
+            policy=email.policy.default,
+        )
+        self.assertIn("hidden.alias@icloud.com", _message_recipients(message))
 
 
 if __name__ == "__main__":

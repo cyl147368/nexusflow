@@ -39,6 +39,7 @@ SMTP_HOST = os.getenv("MAILHUB_SMTP_HOST", "0.0.0.0")
 SMTP_PORT = int(os.getenv("MAILHUB_SMTP_PORT", "2525"))
 _lock = threading.Lock()
 _otp_re = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+_sync_results: dict[str, dict] = {}
 
 app = FastAPI(title="NexusFlow Mail Hub", docs_url=None, redoc_url=None)
 
@@ -217,9 +218,25 @@ def _imap_body(message) -> str:
     return plain or html_body
 
 
-def _refresh_imap(mailbox: dict) -> None:
+def _message_recipients(message) -> str:
+    """Collect addresses forwarding services may leave the alias in."""
+    names = (
+        "To",
+        "Cc",
+        "Delivered-To",
+        "X-Original-To",
+        "Envelope-To",
+        "X-Forwarded-To",
+    )
+    values = []
+    for name in names:
+        values.extend(str(value or "") for value in message.get_all(name, []))
+    return " ".join(values)
+
+
+def _refresh_imap(mailbox: dict) -> dict:
     if mailbox.get("source") != "imap":
-        return
+        return {"ok": True, "source": mailbox.get("source"), "matched": 0, "scanned": 0}
     client = _connect_imap(
         str(mailbox.get("imap_host") or ""),
         int(mailbox.get("imap_port") or 993),
@@ -235,8 +252,10 @@ def _refresh_imap(mailbox: dict) -> None:
         status, data = client.search(None, "SINCE", since)
         if status != "OK":
             raise RuntimeError("IMAP 搜索邮件失败")
-        ids = data[0].split()[-100:]
+        ids = data[0].split()[-300:]
         target = str(mailbox["email"]).lower()
+        matched = 0
+        unmatched_samples = []
         for message_id in reversed(ids):
             status, fetched = client.fetch(message_id, "(RFC822)")
             if status != "OK":
@@ -248,8 +267,16 @@ def _refresh_imap(mailbox: dict) -> None:
             if not raw:
                 continue
             message = email.message_from_bytes(raw, policy=email.policy.default)
-            recipient = str(message.get("To") or "")
+            recipient = _message_recipients(message)
             if target not in recipient.lower():
+                if len(unmatched_samples) < 8:
+                    unmatched_samples.append({
+                        "to": str(message.get("To") or ""),
+                        "delivered_to": str(message.get("Delivered-To") or ""),
+                        "x_original_to": str(message.get("X-Original-To") or ""),
+                        "from": str(message.get("From") or ""),
+                        "subject": str(message.get("Subject") or ""),
+                    })
                 continue
             sender = str(message.get("From") or "")
             subject = str(message.get("Subject") or "")
@@ -262,6 +289,15 @@ def _refresh_imap(mailbox: dict) -> None:
                 subject,
                 _imap_body(message),
             )
+            matched += 1
+        return {
+            "ok": True,
+            "source": "imap",
+            "scanned": len(ids),
+            "matched": matched,
+            "unmatched_samples": unmatched_samples,
+            "checked_at": time.time(),
+        }
     finally:
         try:
             client.logout()
@@ -276,12 +312,22 @@ def _messages_for(token: str, refresh: bool = True) -> list[dict]:
     if refresh and mailbox.get("source") in {"icloud-prime", "imap"}:
         try:
             if mailbox.get("source") == "imap":
-                _refresh_imap(mailbox)
+                _sync_results[token] = _refresh_imap(mailbox)
             else:
                 _refresh_icloud(mailbox)
-        except Exception:
+                _sync_results[token] = {
+                    "ok": True,
+                    "source": "icloud-prime",
+                    "checked_at": time.time(),
+                }
+        except Exception as exc:
             # 上一批缓存仍可用于读取；上游恢复后下一次请求会继续同步。
-            pass
+            _sync_results[token] = {
+                "ok": False,
+                "source": mailbox.get("source"),
+                "error": str(exc)[:500],
+                "checked_at": time.time(),
+            }
     return _stored_messages(token)
 
 
@@ -420,6 +466,34 @@ def mailbox_messages(
     _: None = Depends(require_admin),
 ):
     return {"ok": True, "messages": _messages_for(token, refresh)}
+
+
+@app.get("/api/mailboxes/{token}/diagnostics")
+def mailbox_diagnostics(token: str, _: None = Depends(require_admin)):
+    mailbox = _get_mailbox(token)
+    if not mailbox:
+        raise HTTPException(404, "邮箱不存在")
+    messages = _messages_for(token, refresh=True)
+    safe_mailbox = {
+        key: value
+        for key, value in mailbox.items()
+        if key not in {"icloud_token", "imap_password"}
+    }
+    return {
+        "ok": True,
+        "mailbox": safe_mailbox,
+        "sync": _sync_results.get(token, {}),
+        "messages": [
+            {
+                "from": item.get("from"),
+                "to": item.get("to"),
+                "subject": item.get("subject"),
+                "otp": item.get("otp"),
+                "date": item.get("date"),
+            }
+            for item in messages[:20]
+        ],
+    }
 
 
 @app.get("/mail/{token}", response_class=HTMLResponse)

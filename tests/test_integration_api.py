@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class IntegrationApiTest(unittest.TestCase):
@@ -16,8 +17,15 @@ class IntegrationApiTest(unittest.TestCase):
         os.environ["ICLOUD_PRIME_API_TOKEN"] = "icloud-token"
 
         from fastapi.testclient import TestClient
+        from webui import db
         from webui.app import app
+        from webui import integration
 
+        db.DB_PATH = Path(self.temp.name) / "test.db"
+        db.init_db()
+        integration._job = None
+        integration._stop_event.clear()
+        integration._pause_event.clear()
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -127,6 +135,73 @@ class IntegrationApiTest(unittest.TestCase):
         job = db.get_latest_integration_job()
         self.assertEqual(job["id"], "persisted-job")
         self.assertEqual(job["email"], "persisted@example.com")
+
+    def test_new_run_does_not_reuse_previous_cycle_identity(self):
+        from webui import db, integration
+
+        db.save_integration_config({
+            "mailhub_url": "http://mail-hub:8090",
+            "icloud_url": "http://icloud-prime:8081",
+            "icloud_account_id": "acc_test",
+            "continuous": True,
+            "target_count": 0,
+        })
+        integration._set_job(
+            id="old-job",
+            status="failed",
+            email="old@example.com",
+            alias={"email": "old@example.com"},
+            relay_url="http://mail-hub/mail/old",
+            run_id="old-run",
+        )
+        with patch.object(integration, "_start_worker") as start_worker:
+            job = integration.start_pipeline()
+
+        self.assertNotEqual(job["id"], "old-job")
+        self.assertEqual(job["email"], "")
+        self.assertEqual(job["relay_url"], "")
+        self.assertEqual(job["run_id"], "")
+        self.assertTrue(job["continuous"])
+        start_worker.assert_called_once()
+
+    def test_continuous_loop_stops_at_success_target(self):
+        from webui import db, integration
+
+        db.save_integration_config({
+            "mailhub_url": "http://mail-hub:8090",
+            "icloud_url": "http://icloud-prime:8081",
+            "icloud_account_id": "acc_test",
+            "continuous": True,
+            "target_count": 2,
+            "cool_down_seconds": 0,
+        })
+        integration._job = None
+        integration._set_job(
+            id="loop-job",
+            status="running",
+            continuous=True,
+            target_count=2,
+            success_count=0,
+            failure_count=0,
+            consecutive_failures=0,
+            cycle_no=0,
+            logs=[],
+        )
+        results = [
+            {"ok": True, "email": "one@example.com"},
+            {"ok": True, "email": "two@example.com"},
+        ]
+        with (
+            patch.object(integration, "_run_cycle", side_effect=results),
+            patch.object(integration, "_start_qualification") as qualify,
+        ):
+            integration._run_pipeline("loop-job")
+
+        job = integration.get_job()
+        self.assertEqual(job["status"], "done")
+        self.assertEqual(job["stage"], "target_reached")
+        self.assertEqual(job["success_count"], 2)
+        self.assertEqual(qualify.call_count, 2)
 
 
 if __name__ == "__main__":

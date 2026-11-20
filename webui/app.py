@@ -390,6 +390,21 @@ def api_runs(limit: int = 50):
     return {"ok": True, "items": db.list_runs(limit=limit)}
 
 
+@app.get("/api/runs/{run_id}/log")
+def api_run_log(run_id: str, limit: int = 200):
+    row = next((item for item in db.list_runs(500) if item.get("run_id") == run_id), None)
+    if not row:
+        raise HTTPException(404, "run not found")
+    log_path = Path(str(row.get("log_path") or ""))
+    if not log_path.is_file():
+        raise HTTPException(404, "run log not found")
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as exc:
+        raise HTTPException(500, f"读取日志失败: {exc}") from exc
+    return {"ok": True, "run_id": run_id, "lines": lines[-max(1, min(limit, 1000)):]}
+
+
 @app.get("/api/registered")
 def api_registered(limit: int = 20, offset: int = 0, filter: str = "all"):
     items = db.list_registered(limit=limit, offset=offset, filter_rt=filter)
@@ -1144,6 +1159,13 @@ class IntegrationConfigReq(BaseModel):
     want_session_token: Optional[bool] = None
     want_refresh_token: Optional[bool] = None
     want_2fa: Optional[bool] = None
+    continuous: Optional[bool] = None
+    target_count: Optional[int] = None
+    cool_down_seconds: Optional[int] = None
+    auto_qualify: Optional[bool] = None
+    momo_proxy: Optional[str] = None
+    upi_proxy: Optional[str] = None
+    payment_timeout: Optional[int] = None
 
 
 class ICloudAccountReq(BaseModel):
@@ -1308,9 +1330,41 @@ def api_integration_start():
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/integration/pause")
+def api_integration_pause():
+    try:
+        return {"ok": True, "job": integration.pause_pipeline()}
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/resume")
+def api_integration_resume():
+    try:
+        return {"ok": True, "job": integration.resume_pipeline()}
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/stop")
+def api_integration_stop():
+    try:
+        return {"ok": True, "job": integration.stop_pipeline()}
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/integration/status")
 def api_integration_status():
     return {"ok": True, "job": integration.get_job(), "stats": db.stats()}
+
+
+@app.get("/api/integration/mailbox/{token}/diagnostics")
+def api_integration_mailbox_diagnostics(token: str):
+    try:
+        return integration.mailbox_diagnostics(token)
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ──────────────────────── MoMo / UPI 支付资格检测 ────────────────────────
