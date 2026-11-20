@@ -727,7 +727,12 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
 
 def _run_pipeline(job_id: str) -> None:
     job = get_job()
-    resuming = bool(job.get("_resume")) and str(job.get("stage") or "") in _RESUMABLE_STAGES
+    resume_stage = str(job.get("_resume_stage") or job.get("stage") or "")
+    resuming = (
+        bool(job.get("_resume"))
+        and resume_stage in _RESUMABLE_STAGES
+        and bool(str(job.get("email") or "").strip())
+    )
     first_cycle = True
     try:
         while True:

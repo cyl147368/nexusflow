@@ -233,6 +233,43 @@ class IntegrationApiTest(unittest.TestCase):
             "http://mail-hub:8090/mail/token%2Fwith%20spaces",
         )
 
+    def test_restart_while_cooling_down_starts_a_fresh_cycle(self):
+        from webui import db, integration
+
+        db.save_integration_config({
+            "mailhub_url": "http://mail-hub:8090",
+            "icloud_url": "http://icloud-prime:8081",
+            "icloud_account_id": "acc_test",
+            "continuous": False,
+        })
+        integration._job = None
+        integration._set_job(
+            id="resume-job",
+            status="running",
+            stage="resuming",
+            _resume=True,
+            _resume_stage="cooling_down",
+            continuous=False,
+            cycle_no=1,
+            email="previous@example.com",
+            success_count=0,
+            failure_count=1,
+            consecutive_failures=1,
+            logs=[],
+        )
+        with (
+            patch.object(
+                integration,
+                "_run_cycle",
+                return_value={"ok": True, "email": "fresh@example.com"},
+            ) as run_cycle,
+            patch.object(integration, "_start_qualification"),
+        ):
+            integration._run_pipeline("resume-job")
+
+        self.assertFalse(run_cycle.call_args.kwargs["resuming"])
+        self.assertEqual(integration.get_job()["status"], "done")
+
 
 if __name__ == "__main__":
     unittest.main()
