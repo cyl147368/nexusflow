@@ -238,6 +238,15 @@ def startup() -> None:
 @app.get("/api/health")
 def health(_: None = Depends(_require_admin)):
     rows = _registered_rows()
+    usable = sum(
+        1
+        for row in rows
+        if str(row.get("access_token") or "").strip()
+        and (
+            str(row.get("cookie_header") or "").strip()
+            or str(row.get("session_token") or "").strip()
+        )
+    )
     node = shutil.which("node") or ""
     node_version = ""
     if node:
@@ -257,6 +266,7 @@ def health(_: None = Depends(_require_admin)):
         "ok": True,
         "service": "nexusflow-payment-detector",
         "registered_accounts": len(rows),
+        "usable_accounts": usable,
         "main_db_exists": MAIN_DB.is_file(),
         "methods": sorted(ALLOWED_METHODS),
         "node": node_version,
@@ -270,15 +280,24 @@ def candidates(_: None = Depends(_require_admin)):
     out = []
     for row in _registered_rows():
         email = str(row["email"] or "").lower()
+        has_access = bool(str(row["access_token"] or "").strip())
+        has_session = bool(
+            str(row["cookie_header"] or "").strip()
+            or str(row["session_token"] or "").strip()
+        )
+        missing = []
+        if not has_access:
+            missing.append("Access Token")
+        if not has_session:
+            missing.append("Session")
         out.append(
             {
                 "email": email,
                 "created_at": row["created_at"],
-                "has_access_token": bool(str(row["access_token"] or "").strip()),
-                "has_session": bool(
-                    str(row["cookie_header"] or "").strip()
-                    or str(row["session_token"] or "").strip()
-                ),
+                "has_access_token": has_access,
+                "has_session": has_session,
+                "usable": has_access and has_session,
+                "missing_credentials": missing,
                 "latest": latest.get(email, []),
             }
         )

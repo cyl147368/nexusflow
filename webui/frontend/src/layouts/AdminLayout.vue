@@ -16,6 +16,7 @@ const { banner } = storeToRefs(runtime)
 
 const collapse = ref(false)
 const adDismissed = ref(false)
+const brandIcon = '/static/favicon.svg'
 
 const GROUP_ORDER = ['概览', '注册', '数据', '配置']
 const groups = computed(() => {
@@ -60,7 +61,7 @@ onMounted(() => {
   <el-container class="admin">
     <el-aside :width="collapse ? '64px' : '220px'" class="sidebar">
       <div class="brand" :class="{ mini: collapse }">
-        <span class="logo"><el-icon :size="18"><Platform /></el-icon></span>
+        <span class="logo"><img :src="brandIcon" alt="NexusFlow" /></span>
         <span v-if="!collapse" class="brand-name">NexusFlow</span>
       </div>
       <el-scrollbar>
@@ -168,14 +169,12 @@ onMounted(() => {
 .brand .logo {
   width: 30px;
   height: 30px;
-  border-radius: 6px;
-  background: var(--brand);
-  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
+.brand .logo img { width: 30px; height: 30px; display: block; border-radius: 8px; }
 .brand.mini { justify-content: center; padding: 0; }
 .side-menu { border-right: none; }
 .topbar {

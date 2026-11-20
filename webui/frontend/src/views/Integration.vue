@@ -19,6 +19,7 @@ import {
   testReceiver,
 } from '@/api/integration'
 import { copyText, fmtTime } from '@/api/request'
+import { listRegistered } from '@/api/register'
 import { useProxyStore } from '@/stores/proxy'
 
 const loading = ref(true)
@@ -36,6 +37,7 @@ const aliasStatus = ref('all')
 const aliasPage = ref(1)
 const aliasPageSize = ref(20)
 const aliasActionBusy = ref('')
+const registeredTotal = ref(0)
 const job = ref({ status: 'idle', stage: 'idle', logs: [] })
 const proxyStore = useProxyStore()
 const { list: proxyPool } = storeToRefs(proxyStore)
@@ -165,6 +167,16 @@ async function load() {
     mailHubInfo.value = info.info || {}
   } catch (_) {
     mailHubInfo.value = {}
+  }
+  await loadRegisteredCount()
+}
+
+async function loadRegisteredCount() {
+  try {
+    const result = await listRegistered({ limit: 1, offset: 0, filter: 'all' })
+    registeredTotal.value = Number(result.total || 0)
+  } catch (_) {
+    // 注册结果数量不影响配置页面加载。
   }
 }
 
@@ -329,8 +341,12 @@ async function toggleAlias(alias) {
 async function refreshStatus() {
   try {
     const r = await getIntegrationStatus()
+    const previousStatus = job.value.status
     job.value = r.job || job.value
     running.value = job.value.status === 'running'
+    if (job.value.status === 'done' && previousStatus !== 'done') {
+      await loadRegisteredCount()
+    }
   } catch (_) {
     // 轮询失败不打断当前页面。
   }
@@ -377,7 +393,10 @@ startPolling()
         <h1>一条链完成隐藏邮箱与自动注册</h1>
         <p>配置邮件中转、iCloud 与主项目参数，然后启动。账号池、代理、SMS、2FA、导出仍沿用主项目能力。</p>
       </div>
-      <el-tag :type="statusType" size="large" effect="dark">{{ stageLabel }}</el-tag>
+      <div class="hero-status">
+        <el-tag :type="statusType" size="large" effect="dark">{{ stageLabel }}</el-tag>
+        <span>累计注册成功 <b>{{ registeredTotal }}</b></span>
+      </div>
     </div>
 
     <el-steps :active="activeStep" finish-status="success" align-center class="steps">
@@ -688,6 +707,7 @@ startPolling()
         </template>
         <div class="run-meta">
           <div><span>当前阶段</span><b>{{ stageLabel }}</b></div>
+          <div><span>累计注册成功</span><b>{{ registeredTotal }}</b></div>
           <div v-if="job.email"><span>隐藏邮箱</span><b>{{ job.email }}</b></div>
           <div v-if="job.run_id"><span>主任务 Run ID</span><b>{{ job.run_id }}</b></div>
           <div v-if="job.relay_url"><span>取件链接</span><b class="break">{{ job.relay_url }}</b></div>
@@ -722,6 +742,11 @@ startPolling()
 .hero h1 { margin: 6px 0 8px; font-size: 28px; }
 .hero p { margin: 0; max-width: 720px; color: #b9c7e8; }
 .eyebrow { color: #7da9ff; font-size: 12px; letter-spacing: 1.8px; text-transform: uppercase; }
+.hero-status {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  white-space: nowrap; color: #b9c7e8; font-size: 12px;
+}
+.hero-status b { margin-left: 4px; color: #fff; font-size: 22px; }
 .steps { margin: 24px 0; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .config-card.wide { grid-column: 1 / -1; }
@@ -846,6 +871,7 @@ code { color: var(--el-color-primary); }
   .config-card.wide { grid-column: auto; }
   .account-form { grid-template-columns: 1fr 1fr; }
   .hero { align-items: flex-start; flex-direction: column; }
+  .hero-status { align-items: flex-start; }
   .alias-stats { grid-template-columns: repeat(3, 1fr); }
   .alias-account { grid-column: 1 / -1; justify-self: start; }
   .alias-search { width: 100%; }

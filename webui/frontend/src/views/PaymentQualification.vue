@@ -154,7 +154,7 @@ load()
           <el-tag :type="health.ok ? 'success' : 'danger'">
             {{ health.ok ? '检测服务在线' : '检测服务离线' }}
           </el-tag>
-          <span>{{ health.registered_accounts || 0 }} 个已注册账号</span>
+          <span>{{ health.usable_accounts || 0 }} / {{ health.registered_accounts || 0 }} 个账号可检测</span>
           <span>Node {{ health.node || '未就绪' }} · Chromium {{ health.chromium ? '就绪' : '未就绪' }}</span>
         </div>
       </div>
@@ -210,12 +210,17 @@ load()
             :data="candidates" row-key="email" size="small"
             @selection-change="(rows) => (selected = rows.map((row) => row.email))"
           >
-            <el-table-column type="selection" width="44" />
+            <el-table-column type="selection" width="44" :selectable="(row) => row.usable" />
             <el-table-column prop="email" label="账号" min-width="210" />
             <el-table-column label="凭证" width="110">
               <template #default="{ row }">
-                <el-tag v-if="row.has_access_token && row.has_session" type="success" size="small">完整</el-tag>
-                <el-tag v-else type="warning" size="small">缺少</el-tag>
+                <el-tooltip
+                  v-if="!row.usable"
+                  :content="`缺少：${(row.missing_credentials || []).join('、')}`"
+                >
+                  <el-tag type="warning" size="small">不可检测</el-tag>
+                </el-tooltip>
+                <el-tag v-else type="success" size="small">完整</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="MoMo" min-width="150">
@@ -241,7 +246,9 @@ load()
               </template>
             </el-table-column>
           </el-table>
-          <div class="hint">已选择 {{ selected.length }} / {{ candidates.length }} 个账号。</div>
+          <div class="hint">
+            已选择 {{ selected.length }} 个可检测账号；缺少 Access Token 或 Session 的记录不能执行支付资格检测。
+          </div>
         </el-card>
 
         <el-card v-if="activeRun?.items?.length" shadow="never" class="results-card">
