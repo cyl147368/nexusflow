@@ -742,6 +742,12 @@ def update_plus_check(email: str, plus_info: dict) -> None:
 
 
 def _registered_where(filt: str) -> str:
+    if filt == "successful":
+        return (
+            "WHERE (length(access_token) > 0 "
+            "OR length(session_token) > 0 "
+            "OR length(refresh_token) > 0)"
+        )
     if filt == "has_rt":
         return "WHERE length(refresh_token) > 0"
     if filt == "no_rt":

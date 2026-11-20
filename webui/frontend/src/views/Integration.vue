@@ -173,7 +173,7 @@ async function load() {
 
 async function loadRegisteredCount() {
   try {
-    const result = await listRegistered({ limit: 1, offset: 0, filter: 'all' })
+    const result = await listRegistered({ limit: 1, offset: 0, filter: 'successful' })
     registeredTotal.value = Number(result.total || 0)
   } catch (_) {
     // 注册结果数量不影响配置页面加载。
