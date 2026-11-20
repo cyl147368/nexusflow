@@ -103,7 +103,9 @@ class AuthFlow:
         self._env_overrides = dict(env_overrides or {})
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
-        self._fingerprint = generate_fingerprint()  # 先生成默认指纹
+        self._fingerprint = generate_fingerprint(
+            browser_types=("chrome", "firefox"),
+        )
         self._ua = self._fingerprint["user_agent"]
         self._impersonate_candidates = self._fingerprint.get(
             "fallback_impersonates",
@@ -1788,18 +1790,15 @@ class AuthFlow:
                     import random
                     session_seed = id(self.session) % (2**32)
                     rng = random.Random(session_seed)
-                    # macOS/iOS Safari profiles are occasionally challenged by
-                    # Cloudflare with a cookie-less 403 on the Linux VPS even
-                    # when the same proxy succeeds with Chrome/Firefox. Keep a
-                    # stable browser family when the exit country is applied.
-                    for _ in range(12):
-                        candidate = generate_fingerprint(
-                            rng=rng,
-                            country_code=country_code,
-                        )
-                        if candidate["browser_type"] in {"chrome", "firefox"}:
-                            self._fingerprint = candidate
-                            break
+                    # Safari profiles are frequently challenged by Cloudflare
+                    # with a cookie-less 403 on the Linux VPS even when curl
+                    # and Firefox succeed through the same proxy. Firefox also
+                    # avoids Chromium-client-hint mismatches in later steps.
+                    self._fingerprint = generate_fingerprint(
+                        rng=rng,
+                        country_code=country_code,
+                        browser_types=("firefox",),
+                    )
                     self._ua = self._fingerprint["user_agent"]
                     new_imp = self._fingerprint["impersonate"]
                     self._impersonate_candidates = self._fingerprint.get(

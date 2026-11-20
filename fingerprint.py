@@ -531,7 +531,11 @@ _GENERATORS = {
 }
 
 
-def generate_fingerprint(rng: random.Random | None = None, country_code: str = "") -> dict:
+def generate_fingerprint(
+    rng: random.Random | None = None,
+    country_code: str = "",
+    browser_types: tuple[str, ...] | None = None,
+) -> dict:
     """生成一套一致的浏览器指纹。
 
     参数:
@@ -563,7 +567,19 @@ def generate_fingerprint(rng: random.Random | None = None, country_code: str = "
         device_pixel_ratio: float — window.devicePixelRatio
     """
     r = rng or random
-    browser_type = r.choices(_BROWSER_TYPES, weights=_WEIGHTS, k=1)[0]
+    allowed = set(browser_types or _BROWSER_TYPES)
+    candidates = [
+        (name, weight)
+        for name, weight in zip(_BROWSER_TYPES, _WEIGHTS)
+        if name in allowed
+    ]
+    if not candidates:
+        raise ValueError("browser_types must contain at least one known browser")
+    browser_type = r.choices(
+        [name for name, _ in candidates],
+        weights=[weight for _, weight in candidates],
+        k=1,
+    )[0]
     fp = _GENERATORS[browser_type](r)
 
     # IP 地理联动：按国家码选择时区/语言
