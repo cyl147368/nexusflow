@@ -14,13 +14,14 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -104,16 +105,6 @@ def _require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(401, "未授权")
 
 
-def _open_main_db() -> Optional[sqlite3.Connection]:
-    if not MAIN_DB.is_file():
-        return None
-    uri = f"file:{MAIN_DB.as_posix()}?mode=ro"
-    con = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=15)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA query_only=ON")
-    return con
-
-
 def _account_from_row(row: sqlite3.Row) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     try:
@@ -139,17 +130,36 @@ def _account_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def _registered_rows() -> list[sqlite3.Row]:
-    con = _open_main_db()
-    if con is None:
+def _registered_rows() -> list[dict[str, Any]]:
+    """Read the live WAL database through a private, writable snapshot.
+
+    A Docker named volume mounted ``:ro`` can expose the main DB file but SQLite
+    still needs its ``-wal``/``-shm`` peers, and a WAL reader may need to update
+    the shm index. Copying the DB trio into container-local temp storage gives a
+    consistent point-in-time read without mounting or modifying the source.
+    """
+    if not MAIN_DB.is_file():
         return []
-    try:
-        return con.execute(
-            "SELECT email, access_token, session_token, cookie_header, device_id, "
-            "extra_json, created_at FROM registered ORDER BY created_at DESC"
-        ).fetchall()
-    finally:
-        con.close()
+    with tempfile.TemporaryDirectory(prefix="nexusflow-main-db-") as temp_dir:
+        snapshot = Path(temp_dir) / "webui.db"
+        shutil.copy2(MAIN_DB, snapshot)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(MAIN_DB) + suffix)
+            if sidecar.is_file():
+                shutil.copy2(sidecar, Path(str(snapshot) + suffix))
+        con = sqlite3.connect(str(snapshot), check_same_thread=False, timeout=15)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA query_only=ON")
+        try:
+            return [
+                dict(row)
+                for row in con.execute(
+                    "SELECT email, access_token, session_token, cookie_header, device_id, "
+                    "extra_json, created_at FROM registered ORDER BY created_at DESC"
+                ).fetchall()
+            ]
+        finally:
+            con.close()
 
 
 def _latest_results() -> dict[str, list[dict[str, Any]]]:
