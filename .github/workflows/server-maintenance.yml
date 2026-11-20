@@ -13,6 +13,7 @@ on:
           - stop-non-core
           - start-cache-forge
           - start-cache-forge-public
+          - start-independent-proxy
 
 permissions:
   contents: read
@@ -66,6 +67,14 @@ jobs:
             echo "===== STARTING CACHE FORGE PUBLIC PROXY ====="
             systemctl start cache-forge-public.service
             systemctl --no-pager --full status cache-forge-public.service || true
+            ss -ltnp
+            exit 0
+          fi
+
+          if [ "$ACTION" = "start-independent-proxy" ]; then
+            echo "===== STARTING INDEPENDENT PROXY ====="
+            systemctl start independent-proxy.service
+            systemctl --no-pager --full status independent-proxy.service || true
             ss -ltnp
             exit 0
           fi
