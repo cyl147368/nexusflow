@@ -1,3 +1,4 @@
+import time
 import unittest
 from unittest.mock import patch
 
@@ -121,6 +122,31 @@ class AuthFlowDeviceTest(unittest.TestCase):
         send_passwordless.assert_called_once_with(
             "https://auth.openai.com/log-in/password?state=test"
         )
+
+    def test_pending_passwordless_otp_keeps_previous_delivery_window(self):
+        class Session:
+            def post(self, url, **kwargs):
+                return type(
+                    "Response",
+                    (),
+                    {"status_code": 409, "text": '{"code":"invalid_state"}'},
+                )()
+
+        flow = AuthFlow(Config())
+        flow.session = Session()
+        flow.result.device_id = "device-id"
+        with (
+            patch("sentinel.get_sentinel_token", return_value=("token", "so")),
+            patch.object(flow, "_sentinel_fp_kwargs", return_value={}),
+            patch.object(flow, "resend_otp", return_value=False),
+            patch.object(flow, "_trace_http"),
+        ):
+            sent = flow.send_passwordless_otp(
+                "https://auth.openai.com/log-in/password?state=test"
+            )
+
+        self.assertTrue(sent)
+        self.assertLessEqual(flow._last_otp_sent_after, time.time() - 590)
 
 
 if __name__ == "__main__":

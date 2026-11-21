@@ -2322,7 +2322,7 @@ class AuthFlow:
                 "Sec-Fetch-Site": "same-origin",
             }
         )
-        sentinel_token = self._last_sentinel_token
+        sentinel_token = getattr(self, "_last_sentinel_token", "")
         so_token = getattr(self, "_last_sentinel_so_token", "")
         try:
             from sentinel import get_sentinel_token
@@ -2343,6 +2343,7 @@ class AuthFlow:
             headers["openai-sentinel-so-token"] = so_token
 
         found_transport_error = False
+        self._last_otp_sent_after = None
         for endpoint in (
             "https://auth.openai.com/api/accounts/passwordless/send-otp",
             "https://auth.openai.com/api/accounts/email-otp/send",
@@ -2364,6 +2365,19 @@ class AuthFlow:
                 # 409 means the server already considers an OTP challenge
                 # pending. Browser flows continue to poll the mailbox instead
                 # of creating another challenge with a different state.
+                self._last_otp_sent_after = time.time()
+                if resp.status_code == 409:
+                    # A retry that lands on an existing challenge must not set
+                    # the cutoff after the code that was already delivered.
+                    # Prefer a fresh resend, otherwise keep a wide window so
+                    # the previous attempt's OTP remains visible.
+                    resend_at = time.time()
+                    if self.resend_otp(
+                        "https://auth.openai.com/email-verification"
+                    ):
+                        self._last_otp_sent_after = resend_at
+                    else:
+                        self._last_otp_sent_after = time.time() - 600
                 logger.info("passwordless OTP 已发送或已在等待中")
                 return True
             if resp.status_code not in (400, 404, 405):
@@ -2542,8 +2556,12 @@ class AuthFlow:
         if "/log-in/password" in candidate:
             referer = candidate
         if self.send_passwordless_otp(referer):
+            sent_after = getattr(self, "_last_otp_sent_after", None)
+            if sent_after:
+                self._last_otp_issued_after = float(sent_after)
             return True
 
+        self._last_otp_issued_after = time.time()
         try:
             self.send_otp(referer=referer)
             return True
@@ -3893,6 +3911,9 @@ class AuthFlow:
                         otp_started = self.start_login_password_otp(continue_url)
                         if not otp_started:
                             raise RuntimeError("无法从密码登录页切换到邮箱验证码登录")
+                        otp_sent_at = float(
+                            getattr(flow, "_last_otp_issued_after", otp_sent_at)
+                        )
                         otp_code = mail_provider.wait_for_otp(
                             email,
                             timeout=otp_timeout,
