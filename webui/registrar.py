@@ -32,6 +32,7 @@ from . import db  # noqa: E402
 
 # run_id -> queue of log strings; sentinel = None 表示流结束
 _run_queues: dict[str, queue.Queue] = {}
+_recovery_active: dict[str, str] = {}
 _lock = threading.Lock()
 
 # 当前线程正在跑哪个 run。
@@ -572,6 +573,8 @@ def _do_recovery(
         if q is not None:
             q.put(None)
         _current_run.run_id = None
+        with _lock:
+            _recovery_active.pop(email, None)
 
 
 def _try_export_to_panels(run_id: str, cred: dict) -> None:
@@ -715,9 +718,20 @@ def start_registration(account: dict, options: dict) -> str:
 
 def start_recovery(account: dict, options: dict) -> str:
     """Start an asynchronous email-OTP recovery run."""
+    email = str(account.get("email") or "").strip().lower()
     run_id = uuid.uuid4().hex[:12]
+    with _lock:
+        current_run = _recovery_active.get(email)
+        if current_run:
+            raise RuntimeError(f"该邮箱已有找回任务在运行: {current_run}")
+        _recovery_active[email] = run_id
     log_file = LOG_DIR / f"{run_id}.log"
-    db.create_run(run_id, account["email"], str(log_file))
+    try:
+        db.create_run(run_id, account["email"], str(log_file))
+    except Exception:
+        with _lock:
+            _recovery_active.pop(email, None)
+        raise
 
     q: queue.Queue = queue.Queue()
     with _lock:

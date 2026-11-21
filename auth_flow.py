@@ -3741,6 +3741,10 @@ class AuthFlow:
                         (continue_url or "")[:180] or "(empty)",
                     )
             except Exception as e:
+                if force_email_otp:
+                    raise RuntimeError(
+                        "邮箱验证码登录失败，未回退注册流程"
+                    ) from e
                 logger.warning(f"login screen_hint 探测失败，回退 signup 探测: {e}")
                 continue_url = ""
                 page_type = ""

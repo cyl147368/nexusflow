@@ -461,7 +461,10 @@ def api_recovery_start(req: RecoveryReq):
         "new_password": (req.new_password or "").strip(),
         "workflow_scope": scope,
     }
-    run_id = registrar.start_recovery(account, options)
+    try:
+        run_id = registrar.start_recovery(account, options)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
     logger.info(
         f"[recovery] {run_id} -> {email} "
         f"(scope={scope}, mailbox={'manual' if manual_relay else 'pool'})"
