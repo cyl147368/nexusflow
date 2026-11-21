@@ -163,6 +163,7 @@ class AuthFlow:
         self._is_existing_account = False
         self._existing_email_verification_mode = ""
         self._existing_page_type = ""
+        self.password_login_required = False
         self._manual_login_verifier = (os.getenv("LOGIN_VERIFIER", "") or "").strip()
         self._captured_login_verifier = ""
         self._oauth_client_secret = (os.getenv("OAUTH_CLIENT_SECRET", "") or "").strip()
@@ -2220,29 +2221,20 @@ class AuthFlow:
         return True
 
     # ── Step 7: 发送 OTP ──
-    def set_or_reset_password(self, email: str, password: str) -> dict:
-        """Set a password on an authenticated passwordless account.
-
-        OpenAI's account credential endpoint is also the reset endpoint for
-        browser sessions created through email OTP.  A successful 200 response
-        means the submitted value is now the account password; callers must
-        persist it immediately.
-        """
+    def set_or_reset_password(
+        self,
+        email: str,
+        password: str,
+        *,
+        has_existing_password: Optional[bool] = None,
+    ) -> dict:
+        """Set or reset the account password through the authenticated web flow."""
         email = (email or "").strip().lower()
         password = (password or "").strip()
         if not email or not password:
             raise RuntimeError("设置密码需要 email 和 password")
         if not self.result.access_token:
             raise RuntimeError("登录会话缺少 access_token，无法设置密码")
-
-        try:
-            self.session.get(
-                "https://auth.openai.com/create-account/password",
-                headers=self._common_headers("https://auth.openai.com/create-account"),
-                timeout=15,
-            )
-        except Exception:
-            pass
 
         so_token_for_request = ""
         try:
@@ -2251,7 +2243,7 @@ class AuthFlow:
             token, so_token = _get_st(
                 self.session,
                 device_id=self.result.device_id,
-                flow="username_password_create",
+                flow="password_reset",
                 **self._sentinel_fp_kwargs(),
             )
             self._last_sentinel_token = token or ""
@@ -2259,8 +2251,15 @@ class AuthFlow:
         except Exception as exc:
             logger.warning(f"设置密码前刷新 sentinel 失败: {exc}")
 
+        if has_existing_password is None:
+            has_existing_password = bool(self.password_login_required)
+        endpoint = (
+            "https://auth.openai.com/api/accounts/password/reset"
+            if has_existing_password
+            else "https://auth.openai.com/api/accounts/password/add"
+        )
         headers = self._common_headers(
-            "https://auth.openai.com/create-account/password"
+            "https://auth.openai.com/reset-password/new-password"
         )
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:
@@ -2268,9 +2267,9 @@ class AuthFlow:
         if so_token_for_request:
             headers["openai-sentinel-so-token"] = so_token_for_request
         response = self.session.post(
-            "https://auth.openai.com/api/accounts/user/register",
+            endpoint,
             headers=headers,
-            json={"password": password, "username": email},
+            json={"password": password},
             timeout=30,
         )
         self._trace_http("set_or_reset_password", response)
@@ -2288,6 +2287,7 @@ class AuthFlow:
         return {
             "ok": True,
             "status_code": response.status_code,
+            "mode": "reset" if has_existing_password else "add",
             "continue_url": self._normalize_continue_url(
                 self._extract_continue_url_from_step(response)
             ),
@@ -3580,6 +3580,142 @@ class AuthFlow:
         return self.result
 
     # ── 纯协议已有账号登录流程（目标：拿 callback/session/refresh） ──
+    def reset_password_with_email_otp(
+        self,
+        mail_provider: MailProvider,
+        email: str,
+        new_password: str,
+        timeout: int = 180,
+    ) -> dict:
+        """Reset an existing account through OpenAI's email reset flow."""
+        email = (email or "").strip().lower()
+        new_password = (new_password or "").strip()
+        if not email or len(new_password) < 12:
+            raise RuntimeError("密码重置需要邮箱和至少 12 位的新密码")
+        if not self.warmup():
+            raise RuntimeError("warmup 失败，无法建立密码重置会话")
+
+        reset_page = self.session.get(
+            "https://auth.openai.com/reset-password?"
+            + urlencode({"username": email}),
+            headers=self._common_headers("https://auth.openai.com/log-in/password"),
+            timeout=30,
+        )
+        self._trace_http("reset_password_page", reset_page)
+        if reset_page.status_code != 200:
+            raise RuntimeError(
+                f"打开密码重置页失败: {reset_page.status_code}"
+            )
+
+        sentinel_token, so_token = "", ""
+        try:
+            from sentinel import get_sentinel_token as _get_st
+
+            sentinel_token, so_token = _get_st(
+                self.session,
+                device_id=self.result.device_id,
+                flow="password_reset",
+                **self._sentinel_fp_kwargs(),
+            )
+        except Exception as exc:
+            logger.warning(f"密码重置 sentinel 获取失败: {exc}")
+
+        headers = self._common_headers(
+            "https://auth.openai.com/reset-password"
+        )
+        headers["Content-Type"] = "application/json"
+        if sentinel_token:
+            headers["openai-sentinel-token"] = sentinel_token
+        if so_token:
+            headers["openai-sentinel-so-token"] = so_token
+        otp_sent_at = time.time()
+        sent = self.session.post(
+            "https://auth.openai.com/api/accounts/password/send-otp",
+            headers=headers,
+            json={},
+            timeout=30,
+        )
+        self._trace_http("reset_password_send_otp", sent)
+        if sent.status_code != 200:
+            raise RuntimeError(
+                f"发送密码重置验证码失败: {sent.status_code} - "
+                f"{(sent.text or '')[:300]}"
+            )
+
+        otp_code = mail_provider.wait_for_otp(
+            email,
+            timeout=max(30, int(timeout or 180)),
+            issued_after=otp_sent_at,
+        )
+        verified = self.verify_otp(otp_code)
+        page_type = (self._extract_page_type(verified) or "").lower()
+        continue_url = self._normalize_continue_url(
+            self._extract_continue_url_from_step(verified)
+        )
+        if page_type and page_type not in {
+            "reset_password_new_password",
+            "email_otp_verification",
+        } and "reset-password/new-password" not in continue_url:
+            logger.warning(
+                "密码重置验证码已通过，但页面类型为 %r；继续尝试提交新密码",
+                page_type,
+            )
+
+        if sentinel_token or so_token:
+            try:
+                from sentinel import get_sentinel_token as _get_st
+
+                sentinel_token, so_token = _get_st(
+                    self.session,
+                    device_id=self.result.device_id,
+                    flow="password_reset",
+                    **self._sentinel_fp_kwargs(),
+                )
+            except Exception:
+                pass
+        headers = self._common_headers(
+            "https://auth.openai.com/reset-password/new-password"
+        )
+        headers["Content-Type"] = "application/json"
+        if sentinel_token:
+            headers["openai-sentinel-token"] = sentinel_token
+        if so_token:
+            headers["openai-sentinel-so-token"] = so_token
+        reset = self.session.post(
+            "https://auth.openai.com/api/accounts/password/reset",
+            headers=headers,
+            json={"password": new_password},
+            timeout=30,
+        )
+        self._trace_http("reset_password_submit", reset)
+        mode = "reset"
+        if reset.status_code != 200:
+            reset_failure = (reset.text or "")[:300]
+            reset = self.session.post(
+                "https://auth.openai.com/api/accounts/password/add",
+                headers=headers,
+                json={"password": new_password},
+                timeout=30,
+            )
+            self._trace_http("add_password_after_reset_start", reset)
+            mode = "add"
+            if reset.status_code != 200:
+                raise RuntimeError(
+                    f"提交新密码失败: {reset.status_code} - "
+                    f"{(reset.text or reset_failure)[:300]}"
+                )
+        self.result.email = email
+        self.result.password = new_password
+        return {
+            "ok": True,
+            "email": email,
+            "password": new_password,
+            "mode": mode,
+            "page_type": page_type,
+            "continue_url": continue_url,
+            "status_code": reset.status_code,
+        }
+
     def run_protocol_login(
         self,
         mail_provider: MailProvider,
@@ -3667,6 +3803,7 @@ class AuthFlow:
 
                 if page_type == "login_password" or "/log-in/password" in (continue_url or ""):
                     logger.info("登录分支: login_password -> password/verify")
+                    self.password_login_required = True
                     # 命中已有账号 password 路径：标记之，让 kickoff_otp_delivery 走 resend
                     # 分支（避免 send_passwordless_otp 把 state 弄坏 → wrong_email_otp_code）
                     self._is_existing_account = True

@@ -400,10 +400,23 @@ class IntegrationApiTest(unittest.TestCase):
         class FakeFlow:
             def __init__(self):
                 self.password = ""
+                self.force_email_otp = None
+                self.password_login_required = True
+
+            def reset_password_with_email_otp(
+                self,
+                mail,
+                email,
+                new_password,
+                timeout=180,
+            ):
+                self.password = new_password
+                return {"ok": True, "mode": "reset"}
 
             def run_protocol_login(self, mail, email, password="", force_email_otp=False):
                 self.email = email
                 self.force_email_otp = force_email_otp
+                self.password = password
 
                 class Result:
                     @staticmethod
@@ -419,7 +432,7 @@ class IntegrationApiTest(unittest.TestCase):
 
                 return Result()
 
-            def set_or_reset_password(self, email, password):
+            def set_or_reset_password(self, email, password, **kwargs):
                 self.password = password
                 return {"ok": True}
 
@@ -450,7 +463,7 @@ class IntegrationApiTest(unittest.TestCase):
                 },
             )
 
-        self.assertTrue(fake.force_email_otp)
+        self.assertFalse(fake.force_email_otp)
         self.assertEqual(result["credential_source"], "recovery")
         self.assertEqual(result["password"], "NewPassword1!")
         saved = db.get_registered("recovered@example.com")
