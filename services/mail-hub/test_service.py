@@ -116,6 +116,19 @@ class MailHubApiTest(unittest.TestCase):
         )
         self.assertEqual(_extract_otp(body), "699389")
 
+    def test_message_recipients_keep_forwarded_alias(self):
+        from service import _message_recipients
+
+        message = email.message_from_string(
+            "From: sender@example.com\n"
+            "To: receiver@qq.com\n"
+            "X-Forwarded-To: alias@icloud.com\n"
+            "Subject: verification\n\n"
+            "Your code is 123456\n",
+            policy=email.policy.default,
+        )
+        self.assertIn("alias@icloud.com", _message_recipients(message))
+
 
 if __name__ == "__main__":
     unittest.main()

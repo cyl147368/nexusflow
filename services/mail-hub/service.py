@@ -24,7 +24,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Optional
 
@@ -158,13 +159,29 @@ def _extract_otp(text: str) -> str:
     return ""
 
 
-def _store_message(token: str, key: str, sender: str, recipient: str, subject: str, body: str) -> None:
+def _store_message(
+    token: str,
+    key: str,
+    sender: str,
+    recipient: str,
+    subject: str,
+    body: str,
+    created_at: Optional[float] = None,
+) -> None:
     with _lock, _conn() as con:
         con.execute(
             "INSERT OR REPLACE INTO messages"
             "(mailbox_token,message_key,sender,recipient,subject,body,created_at)"
             " VALUES (?,?,?,?,?,?,?)",
-            (token, key[:300], sender[:500], recipient[:500], subject[:500], body[:100000], time.time()),
+            (
+                token,
+                key[:300],
+                sender[:500],
+                recipient[:500],
+                subject[:500],
+                body[:100000],
+                float(created_at if created_at is not None else time.time()),
+            ),
         )
 
 
@@ -349,7 +366,7 @@ def _refresh_imap(mailbox: dict) -> dict:
             # window took ~80 seconds, longer than the relay/provider timeout.
             ids = data[0].split()[-IMAP_RECENT_LIMIT:]
             scanned += len(ids)
-            for message_id in reversed(ids):
+            for message_id in ids:
                 # Fetch headers first. QQ/IMAP can be slow enough that
                 # downloading full messages on every OTP poll consumed the
                 # whole verification window before the new mail was seen.
@@ -398,6 +415,17 @@ def _refresh_imap(mailbox: dict) -> dict:
                     message.get("Message-ID")
                     or f"imap:{mailbox['token']}:{folder}:{message_id.decode()}"
                 )
+                created_at = time.time()
+                try:
+                    parsed_date = parsedate_to_datetime(
+                        str(message.get("Date") or "")
+                    )
+                    if parsed_date:
+                        if parsed_date.tzinfo is None:
+                            parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+                        created_at = parsed_date.timestamp()
+                except Exception:
+                    pass
                 _store_message(
                     mailbox["token"],
                     f"imap:{fingerprint}",
@@ -405,6 +433,7 @@ def _refresh_imap(mailbox: dict) -> dict:
                     recipient,
                     subject,
                     _imap_body(message),
+                    created_at=created_at,
                 )
                 matched += 1
         return {
