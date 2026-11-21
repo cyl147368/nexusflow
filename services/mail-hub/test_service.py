@@ -62,6 +62,19 @@ class MailHubApiTest(unittest.TestCase):
         self.assertFalse(body["smtp_enabled"])
         self.assertEqual(body["default_source"], "icloud-prime")
 
+    def test_internal_icloud_url_bypasses_container_proxy(self):
+        from service import _is_internal_service_url
+
+        self.assertTrue(
+            _is_internal_service_url("http://icloud-prime:8091/api/inbox")
+        )
+        self.assertTrue(
+            _is_internal_service_url("http://10.20.0.8:8091/api/inbox")
+        )
+        self.assertFalse(
+            _is_internal_service_url("https://api.openai.com/v1/me")
+        )
+
     def test_forwarded_alias_can_be_found_outside_to_header(self):
         from service import _message_recipients
 

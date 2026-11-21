@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import email
 import email.policy
+import ipaddress
 import imaplib
 import html
 import json
@@ -42,6 +43,33 @@ _otp_re = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 _sync_results: dict[str, dict] = {}
 
 app = FastAPI(title="NexusFlow Mail Hub", docs_url=None, redoc_url=None)
+
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _is_internal_service_url(url: str) -> bool:
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").strip().lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host in {
+        "localhost",
+        "icloud-prime",
+        "nexusflow-icloud-prime-1",
+        "host.docker.internal",
+        "gateway.docker.internal",
+    }:
+        return True
+    if host.endswith((".internal", ".local")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return ip.is_loopback or ip.is_private or ip.is_link_local
+    except ValueError:
+        return False
 
 
 def _conn() -> sqlite3.Connection:
@@ -168,7 +196,12 @@ def _request_json(url: str, token: str) -> dict:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
+        opener = (
+            _DIRECT_OPENER
+            if _is_internal_service_url(url)
+            else urllib.request
+        )
+        with opener.open(req, timeout=25) as response:
             return json.loads(response.read().decode("utf-8", errors="replace") or "{}")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:300]
