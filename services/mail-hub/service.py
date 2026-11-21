@@ -38,6 +38,8 @@ ADMIN_TOKEN = os.getenv("MAILHUB_ADMIN_TOKEN", "")
 PUBLIC_URL = os.getenv("MAILHUB_PUBLIC_URL", "http://127.0.0.1:8090").rstrip("/")
 SMTP_HOST = os.getenv("MAILHUB_SMTP_HOST", "0.0.0.0")
 SMTP_PORT = int(os.getenv("MAILHUB_SMTP_PORT", "2525"))
+IMAP_SCAN_DAYS = max(1, int(os.getenv("MAILHUB_IMAP_SCAN_DAYS", "2")))
+IMAP_RECENT_LIMIT = max(10, int(os.getenv("MAILHUB_IMAP_RECENT_LIMIT", "30")))
 _lock = threading.Lock()
 _otp_re = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 _sync_results: dict[str, dict] = {}
@@ -336,11 +338,16 @@ def _refresh_imap(mailbox: dict) -> dict:
                 continue
             if status != "OK":
                 continue
-            since = (datetime.utcnow() - timedelta(days=7)).strftime("%d-%b-%Y")
+            since = (
+                datetime.utcnow() - timedelta(days=IMAP_SCAN_DAYS)
+            ).strftime("%d-%b-%Y")
             status, data = client.search(None, "SINCE", since)
             if status != "OK":
                 continue
-            ids = data[0].split()[-100:]
+            # Verification mail is always near the end of the mailbox. Kept
+            # short because QQ IMAP header fetches are serial and a 100-message
+            # window took ~80 seconds, longer than the relay/provider timeout.
+            ids = data[0].split()[-IMAP_RECENT_LIMIT:]
             scanned += len(ids)
             for message_id in reversed(ids):
                 # Fetch headers first. QQ/IMAP can be slow enough that
@@ -480,6 +487,8 @@ def health(_: None = Depends(require_admin)):
         "smtp_port": SMTP_PORT,
         "smtp_enabled": SMTP_PORT > 0,
         "default_source": "icloud-prime",
+        "imap_scan_days": IMAP_SCAN_DAYS,
+        "imap_recent_limit": IMAP_RECENT_LIMIT,
     }
 
 

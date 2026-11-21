@@ -61,6 +61,8 @@ class MailHubApiTest(unittest.TestCase):
         self.assertEqual(body["smtp_port"], 0)
         self.assertFalse(body["smtp_enabled"])
         self.assertEqual(body["default_source"], "icloud-prime")
+        self.assertGreaterEqual(body["imap_scan_days"], 1)
+        self.assertGreaterEqual(body["imap_recent_limit"], 10)
 
     def test_internal_icloud_url_bypasses_container_proxy(self):
         from service import _is_internal_service_url
