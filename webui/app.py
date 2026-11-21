@@ -63,6 +63,7 @@ app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
 def resume_integration_job():
     """Resume unfinished one-click jobs from SQLite after a container restart."""
     integration.resume_pending()
+    registrar.resume_recovery_batches()
 
 
 @app.middleware("http")
@@ -124,6 +125,20 @@ class RegisterReq(BaseModel):
 class RecoveryReq(BaseModel):
     email: str
     relay_url: str = ""
+    proxy: str = ""
+    otp_timeout: int = 180
+    want_2fa: bool = True
+    new_password: str = ""
+    workflow_scope: str = "legacy"
+
+
+class RecoveryBatchItem(BaseModel):
+    email: str
+    relay_url: str = ""
+
+
+class RecoveryBatchReq(BaseModel):
+    items: list[RecoveryBatchItem]
     proxy: str = ""
     otp_timeout: int = 180
     want_2fa: bool = True
@@ -475,6 +490,65 @@ def api_recovery_start(req: RecoveryReq):
         "email": email,
         "workflow_scope": scope,
     }
+
+
+@app.post("/api/recovery/batch/start")
+def api_recovery_batch_start(req: RecoveryBatchReq):
+    """Start a sequential recovery queue for multiple mailboxes."""
+    if not req.items:
+        raise HTTPException(400, "请至少选择一个邮箱")
+    if len(req.items) > 500:
+        raise HTTPException(400, "单批最多 500 个邮箱")
+    seen: set[str] = set()
+    items: list[dict] = []
+    for raw in req.items:
+        email = (raw.email or "").strip().lower()
+        if "@" not in email or email in seen:
+            continue
+        seen.add(email)
+        stored = db.get_account(email)
+        relay_url = (raw.relay_url or "").strip()
+        if not relay_url and stored:
+            relay_url = str(stored.get("relay_url") or "").strip()
+        if not stored and not relay_url:
+            raise HTTPException(400, f"{email} 不在号池中，且没有接码地址")
+        if not relay_url:
+            raise HTTPException(400, f"{email} 没有接码地址")
+        items.append({"email": email, "relay_url": relay_url})
+    if not items:
+        raise HTTPException(400, "没有可处理的邮箱")
+    options = {
+        "proxy": req.proxy,
+        "otp_timeout": max(30, int(req.otp_timeout or 180)),
+        "want_2fa": req.want_2fa,
+        "new_password": (req.new_password or "").strip(),
+        "workflow_scope": _workflow_scope(req.workflow_scope, "legacy"),
+    }
+    try:
+        batch_id = registrar.start_recovery_batch(items, options)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    logger.info(f"[recovery-batch] {batch_id} 启动，共 {len(items)} 个邮箱")
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "run_id": batch_id,
+        "total": len(items),
+        "items": items,
+    }
+
+
+@app.get("/api/recovery/batch/status/{batch_id}")
+def api_recovery_batch_status(batch_id: str):
+    job = registrar.get_recovery_batch(batch_id)
+    if not job:
+        raise HTTPException(404, "批量找回任务不存在")
+    return {"ok": True, "job": job}
+
+
+@app.get("/api/recovery/batch/latest")
+def api_recovery_batch_latest():
+    return {"ok": True, "job": registrar.get_latest_recovery_batch()}
 
 
 @app.get("/api/runs/{run_id}/stream")

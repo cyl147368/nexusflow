@@ -394,6 +394,114 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(account["relay_url"], "https://mail.example/recover")
         self.assertEqual(account["workflow_scope"], "legacy")
 
+    def test_recovery_batch_deduplicates_and_accepts_manual_urls(self):
+        with patch(
+            "webui.registrar.start_recovery_batch",
+            return_value="batch-run",
+        ) as start:
+            response = self.client.post(
+                "/api/recovery/batch/start",
+                json={
+                    "items": [
+                        {
+                            "email": "one@example.com",
+                            "relay_url": "https://mail.example/one",
+                        },
+                        {
+                            "email": "one@example.com",
+                            "relay_url": "https://mail.example/duplicate",
+                        },
+                        {
+                            "email": "two@example.com",
+                            "relay_url": "https://mail.example/two",
+                        },
+                    ],
+                    "want_2fa": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["batch_id"], "batch-run")
+        items = start.call_args.args[0]
+        self.assertEqual(
+            items,
+            [
+                {
+                    "email": "one@example.com",
+                    "relay_url": "https://mail.example/one",
+                },
+                {
+                    "email": "two@example.com",
+                    "relay_url": "https://mail.example/two",
+                },
+            ],
+        )
+
+    def test_recovery_batch_is_persisted(self):
+        from webui import db
+
+        db.save_recovery_batch({
+            "id": "batch-persisted",
+            "status": "running",
+            "items": [{"email": "one@example.com"}],
+            "results": [],
+            "next_index": 0,
+        })
+        job = db.get_latest_recovery_batch()
+        self.assertEqual(job["id"], "batch-persisted")
+        self.assertEqual(job["items"][0]["email"], "one@example.com")
+
+    def test_recovery_batch_processes_items_in_order_and_keeps_partial_results(self):
+        from webui import account_recovery, db, registrar
+        from webui.account_recovery import RecoveryError
+
+        db.import_accounts(
+            "one@example.com----http://mail.example/one",
+            kind="icloud_relay",
+            workflow_scope="legacy",
+        )
+        db.import_accounts(
+            "two@example.com----http://mail.example/two",
+            kind="icloud_relay",
+            workflow_scope="legacy",
+        )
+        job = {
+            "id": "batch-order",
+            "status": "running",
+            "items": [
+                {"email": "one@example.com"},
+                {"email": "two@example.com"},
+            ],
+            "options": {"want_2fa": False, "workflow_scope": "legacy"},
+            "results": [],
+            "next_index": 0,
+            "log_path": str(Path(self.temp.name) / "batch.log"),
+        }
+        db.save_recovery_batch(job)
+        calls = []
+
+        def recover(account, options):
+            calls.append(account["email"])
+            if account["email"] == "two@example.com":
+                raise RecoveryError(
+                    "two failed",
+                    payload={"email": account["email"], "error": "two failed"},
+                )
+            return {"email": account["email"], "credential_source": "recovery"}
+
+        with patch.object(account_recovery, "recover_account", side_effect=recover):
+            registrar._do_recovery_batch(
+                "batch-order",
+                Path(job["log_path"]),
+                job,
+            )
+
+        persisted = db.get_recovery_batch("batch-order")
+        self.assertEqual(calls, ["one@example.com", "two@example.com"])
+        self.assertEqual(persisted["next_index"], 2)
+        self.assertEqual(persisted["success_count"], 1)
+        self.assertEqual(persisted["failure_count"], 1)
+        self.assertEqual(persisted["status"], "partial")
+
     def test_recovery_marks_result_source_and_resets_password(self):
         from webui import account_recovery, db
 

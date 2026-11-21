@@ -1,10 +1,11 @@
 <script setup>
-import { onActivated, ref } from 'vue'
+import { computed, onActivated, onDeactivated, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 import {
-  startRegister, startRecovery, getRegistered,
+  startRegister, startRecoveryBatch, getRegistered, getLatestRecoveryBatch,
+  getRecoveryBatch,
 } from '@/api/register'
 import { listAccounts } from '@/api/accounts'
 import { copyText } from '@/api/request'
@@ -22,7 +23,7 @@ const { runningSingle, lastRunResult } = storeToRefs(runtime)
 const starting = ref(false)
 const mode = ref('register')
 const regEmail = ref('')
-const recoveryEmail = ref('')
+const recoveryEmails = ref([])
 const recoverySource = ref('pool')
 const recoveryRelay = ref('')
 const recoveryPassword = ref('')
@@ -30,6 +31,9 @@ const recoveryWant2fa = ref(true)
 const recoveryScope = ref('legacy')
 const recoveryAccounts = ref([])
 const recoveryBusy = ref(false)
+const activeRecoveryBatchId = ref('')
+const recoveryBatchJob = ref(null)
+let recoveryBatchTimer = null
 // 2FA 默认开（主人要求每个号都绑）。绑定不可逆，所以留开关。
 // 放在 form store（localStorage 持久化）而不是组件局部 ref —— 组件是
 // keep-alive 的，切页不丢，但刷新页面会重建，关了就白关。
@@ -38,15 +42,17 @@ const recoveryBusy = ref(false)
 onActivated(() => {
   if (route.query.email) {
     regEmail.value = String(route.query.email)
-    recoveryEmail.value = String(route.query.email)
+    recoveryEmails.value = [String(route.query.email)]
   }
   loadRecoveryAccounts()
+  loadLatestRecoveryBatch()
 })
+onDeactivated(stopBatchPolling)
 
 async function loadRecoveryAccounts() {
   try {
     const result = await listAccounts({
-      limit: 200,
+      limit: 500,
       offset: 0,
       workflow_scope: '',
     })
@@ -55,6 +61,75 @@ async function loadRecoveryAccounts() {
     recoveryAccounts.value = []
   }
 }
+
+async function loadLatestRecoveryBatch() {
+  try {
+    const { job } = await getLatestRecoveryBatch()
+    if (!job?.id) return
+    activeRecoveryBatchId.value = job.id
+    recoveryBatchJob.value = job
+    if (job.status === 'running') {
+      mode.value = 'recovery'
+      startBatchPolling(job.id)
+    } else if (
+      ['done', 'partial', 'failed'].includes(job.status)
+      && !lastRunResult.value
+    ) {
+      applyBatchResult(job)
+    }
+  } catch (_) {
+    // No previous batch.
+  }
+}
+
+function applyBatchResult(job) {
+  recoveryBatchJob.value = job
+  lastRunResult.value = {
+    email: `批量找回 ${job.items?.length || 0} 个邮箱`,
+    credential_source: 'recovery',
+    credential_source_label: '邮箱验证码找回',
+    batch_total: job.items?.length || 0,
+    batch_success: job.success_count || 0,
+    batch_failure: job.failure_count || 0,
+    batch_results: job.results || [],
+    partial: job.status === 'partial',
+    error: job.status === 'failed' ? (job.message || '批量找回失败') : '',
+  }
+}
+
+async function pollRecoveryBatch(batchId) {
+  try {
+    const { job } = await getRecoveryBatch(batchId)
+    if (!job) return
+    recoveryBatchJob.value = job
+    if (!['running', 'paused'].includes(job.status)) {
+      stopBatchPolling()
+      applyBatchResult(job)
+      runtime.bumpData()
+    }
+  } catch (_) {
+    // Keep polling through transient network failures.
+  }
+}
+
+function startBatchPolling(batchId) {
+  stopBatchPolling()
+  pollRecoveryBatch(batchId)
+  recoveryBatchTimer = setInterval(() => pollRecoveryBatch(batchId), 2500)
+}
+
+function stopBatchPolling() {
+  if (recoveryBatchTimer) clearInterval(recoveryBatchTimer)
+  recoveryBatchTimer = null
+}
+
+const recoveryBatchPercent = computed(() => {
+  const total = Number(recoveryBatchJob.value?.items?.length || 0)
+  if (!total) return 0
+  return Math.min(100, Math.round(
+    Number(recoveryBatchJob.value?.completed_count || 0) / total * 100,
+  ))
+})
 
 async function run() {
   starting.value = true
@@ -92,28 +167,51 @@ async function copyField(email, field) {
 }
 
 async function runRecovery() {
-  const email = recoveryEmail.value.trim()
-  if (!email) {
-    ElMessage.warning('请输入要找回的邮箱')
+  let items = []
+  if (recoverySource.value === 'manual') {
+    for (const rawLine of recoveryRelay.value.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (!line) continue
+      const parts = line.split('----')
+      if (parts.length !== 2 || !parts[0].includes('@') || !/^https?:\/\//i.test(parts[1].trim())) {
+        ElMessage.warning(`接码地址格式错误：${line}`)
+        return
+      }
+      items.push({ email: parts[0].trim(), relay_url: parts[1].trim() })
+    }
+  } else {
+    items = recoveryEmails.value.map((email) => ({ email, relay_url: '' }))
+  }
+  if (!items.length) {
+    ElMessage.warning(recoverySource.value === 'manual'
+      ? '请按 email----接码地址 每行一个填写'
+      : '请选择至少一个邮箱')
     return
   }
   recoveryBusy.value = true
   runtime.clearLogs()
   lastRunResult.value = null
   try {
-    const result = await startRecovery({
-      email,
-      relay_url: recoverySource.value === 'manual'
-        ? recoveryRelay.value.trim()
-        : '',
+    const result = await startRecoveryBatch({
+      items,
       proxy: proxyText(form.value),
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 180,
       want_2fa: recoveryWant2fa.value,
       new_password: recoveryPassword.value.trim(),
       workflow_scope: recoveryScope.value,
     })
+    activeRecoveryBatchId.value = result.batch_id
+    recoveryBatchJob.value = {
+      id: result.batch_id,
+      status: 'running',
+      items: result.items || items,
+      completed_count: 0,
+      success_count: 0,
+      failure_count: 0,
+    }
+    startBatchPolling(result.batch_id)
     runtime.addLog(
-      `[client] 启动账号找回 run_id=${result.run_id} email=${result.email}`,
+      `[client] 启动批量账号找回 run_id=${result.run_id} 共 ${items.length} 个邮箱`,
       'evt',
     )
     runtime.streamRun(result.run_id)
@@ -181,18 +279,18 @@ async function runRecovery() {
               type="info" :closable="false" show-icon style="margin-bottom: 14px"
               title="不会新建账号：通过邮箱验证码登录已有账号，自动设置新密码，并在缺少 2FA 时补齐 TOTP。"
             />
-            <el-form-item label="要找回的邮箱">
-              <el-input
-                v-model="recoveryEmail"
-                clearable
-                placeholder="输入账号邮箱，或从下方隐私邮箱池选择"
-              />
+            <el-form-item label="接码来源">
+              <el-radio-group v-model="recoverySource">
+                <el-radio-button value="pool">使用号池隐私邮箱</el-radio-button>
+                <el-radio-button value="manual">手填接码地址</el-radio-button>
+              </el-radio-group>
             </el-form-item>
-            <el-form-item label="邮箱池快捷选择">
+            <el-form-item v-if="recoverySource === 'pool'" label="批量选择邮箱">
               <el-select
-                v-model="recoveryEmail"
-                filterable clearable allow-create
-                placeholder="选择带隐私邮箱取件链接的账号"
+                v-model="recoveryEmails"
+                multiple filterable clearable allow-create collapse-tags
+                :max-collapse-tags="5"
+                placeholder="可选择多个带隐私邮箱取件链接的账号"
                 style="width: 100%"
               >
                 <el-option
@@ -202,23 +300,18 @@ async function runRecovery() {
                   :value="item.email"
                 />
               </el-select>
-            </el-form-item>
-            <el-form-item label="接码来源">
-              <el-radio-group v-model="recoverySource">
-                <el-radio-button value="pool">使用号池隐私邮箱</el-radio-button>
-                <el-radio-button value="manual">手填接码地址</el-radio-button>
-              </el-radio-group>
+              <div class="hint" style="margin-top: 6px">
+                已选择 {{ recoveryEmails.length }} 个邮箱；后端会按顺序逐个执行。
+              </div>
             </el-form-item>
             <el-form-item v-if="recoverySource === 'manual'" label="邮箱接码地址">
               <el-input
                 v-model="recoveryRelay"
-                clearable
-                placeholder="https://... 隐私邮箱取件链接"
+                type="textarea"
+                :rows="5"
+                placeholder="每行一个：email----https://... 隐私邮箱取件链接"
               />
             </el-form-item>
-            <div v-else class="hint" style="margin: -8px 0 14px">
-              后端会从该邮箱的号池记录读取 <code>email----取件链接</code>。
-            </div>
             <el-form-item label="代理（可选）">
               <el-select
                 v-model="form.proxy" filterable clearable allow-create default-first-option
@@ -239,6 +332,9 @@ async function runRecovery() {
                 clearable
                 placeholder="留空则生成 16 位强密码"
               />
+              <div class="hint" style="margin-top: 6px">
+                批量找回建议留空，每个账号会生成独立密码。
+              </div>
             </el-form-item>
             <el-form-item label="找回结果归属">
               <el-radio-group v-model="recoveryScope">
@@ -258,10 +354,26 @@ async function runRecovery() {
             <el-button
               type="primary"
               :loading="recoveryBusy || runningSingle"
+              :disabled="recoveryBatchJob?.status === 'running'"
               @click="runRecovery"
             >
-              通过邮箱验证码找回
+              {{ recoverySource === 'manual'
+                ? '批量导入并找回'
+                : `找回选中的 ${recoveryEmails.length} 个邮箱` }}
             </el-button>
+            <div
+              v-if="recoveryBatchJob && recoveryBatchJob.status === 'running'"
+              class="recovery-progress"
+            >
+              <el-progress :percentage="recoveryBatchPercent" />
+              <div class="hint">
+                已完成 {{ recoveryBatchJob.completed_count || 0 }}
+                / {{ recoveryBatchJob.items?.length || 0 }}
+                <template v-if="recoveryBatchJob.current_email">
+                  · 当前 {{ recoveryBatchJob.current_email }}
+                </template>
+              </div>
+            </div>
           </el-form>
 
           <el-alert
@@ -290,6 +402,28 @@ async function runRecovery() {
               }}
             </el-tag>
             (access_token len={{ lastRunResult.access_token_len }}{{ lastRunResult.partial ? ', 部分凭证' : '' }})
+            <div v-if="lastRunResult.batch_total" style="margin-top: 10px">
+              <div style="display: flex; gap: 8px; margin-bottom: 8px">
+                <el-tag type="success">成功 {{ lastRunResult.batch_success }}</el-tag>
+                <el-tag type="danger">失败 {{ lastRunResult.batch_failure }}</el-tag>
+                <el-tag v-if="activeRecoveryBatchId" type="info">
+                  任务 {{ activeRecoveryBatchId }}
+                </el-tag>
+              </div>
+              <div class="batch-recovery-results">
+                <div
+                  v-for="item in lastRunResult.batch_results || []"
+                  :key="item.email"
+                  class="batch-recovery-row"
+                >
+                  <span class="mono">{{ item.email }}</span>
+                  <el-tag size="small" :type="item.ok ? 'success' : 'danger'">
+                    {{ item.ok ? '成功' : '失败' }}
+                  </el-tag>
+                  <span v-if="item.error" class="hint batch-error">{{ item.error }}</span>
+                </div>
+              </div>
+            </div>
             <div v-if="lastRunResult.password" class="cred-line">
               <span class="cred-label">密码</span><code class="cred-val">{{ lastRunResult.password }}</code>
             </div>
@@ -320,8 +454,23 @@ async function runRecovery() {
           </el-alert>
           <el-alert
             v-else-if="lastRunResult && lastRunResult.error"
-            type="error" :closable="false" style="margin-top: 14px" :title="lastRunResult.error"
-          />
+            type="error" :closable="false" style="margin-top: 14px"
+          >
+            <template #title>{{ lastRunResult.error }}</template>
+            <div v-if="lastRunResult.batch_results?.length" class="batch-recovery-results">
+              <div
+                v-for="item in lastRunResult.batch_results"
+                :key="item.email"
+                class="batch-recovery-row"
+              >
+                <span class="mono">{{ item.email }}</span>
+                <el-tag size="small" :type="item.ok ? 'success' : 'danger'">
+                  {{ item.ok ? '成功' : '失败' }}
+                </el-tag>
+                <span v-if="item.error" class="hint batch-error">{{ item.error }}</span>
+              </div>
+            </div>
+          </el-alert>
         </el-card>
       </el-col>
 
@@ -333,3 +482,31 @@ async function runRecovery() {
     </el-row>
   </div>
 </template>
+
+<style scoped>
+.batch-recovery-results {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
+.batch-recovery-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.batch-recovery-row:last-child { border-bottom: 0; }
+.batch-recovery-row > .batch-error {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+.recovery-progress {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+}
+</style>

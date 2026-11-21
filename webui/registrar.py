@@ -33,6 +33,7 @@ from . import db  # noqa: E402
 # run_id -> queue of log strings; sentinel = None 表示流结束
 _run_queues: dict[str, queue.Queue] = {}
 _recovery_active: dict[str, str] = {}
+_recovery_batch_active: set[str] = set()
 _lock = threading.Lock()
 
 # 当前线程正在跑哪个 run。
@@ -745,6 +746,263 @@ def start_recovery(account: dict, options: dict) -> str:
     )
     thread.start()
     return run_id
+
+
+def _save_recovery_batch(job: dict) -> None:
+    job["updated_at"] = time.time()
+    db.save_recovery_batch(job)
+
+
+def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -> None:
+    """Process a persisted recovery queue in submission order."""
+    from .account_recovery import RecoveryError, recover_account
+
+    job = dict(job or db.get_recovery_batch(batch_id) or {})
+    items = list(job.get("items") or [])
+    results = list(job.get("results") or [])
+    options = dict(job.get("options") or {})
+    _current_run.run_id = batch_id
+    handler = QueueLogHandler(batch_id, log_file)
+    handler.setLevel(logging.INFO)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    if root_logger.level > logging.INFO or root_logger.level == 0:
+        root_logger.setLevel(logging.INFO)
+
+    try:
+        next_index = max(0, int(job.get("next_index") or 0))
+        while next_index < len(items):
+            item = dict(items[next_index] or {})
+            email = str(item.get("email") or "").strip().lower()
+            if not email:
+                next_index += 1
+                continue
+            job.update(
+                status="running",
+                next_index=next_index,
+                current_email=email,
+                message=f"正在处理第 {next_index + 1}/{len(items)} 个邮箱",
+            )
+            _save_recovery_batch(job)
+            _emit_status(
+                batch_id,
+                "phase",
+                {
+                    "phase": "batch_item_started",
+                    "email": email,
+                    "index": next_index + 1,
+                    "total": len(items),
+                },
+            )
+            account = dict(db.get_account(email) or {})
+            account.update(
+                {
+                    "email": email,
+                    "kind": "icloud_relay",
+                    "relay_url": item.get("relay_url") or account.get("relay_url") or "",
+                    "workflow_scope": (
+                        account.get("workflow_scope")
+                        or options.get("workflow_scope")
+                        or "legacy"
+                    ),
+                }
+            )
+            item_options = dict(options)
+            item_options["relay_url"] = account["relay_url"]
+            item_options["workflow_scope"] = account["workflow_scope"]
+            try:
+                result = recover_account(account, item_options)
+                result["ok"] = True
+            except Exception as exc:
+                result = dict(getattr(exc, "payload", {}) or {})
+                result.update(
+                    {
+                        "ok": False,
+                        "email": email,
+                        "error": str(exc),
+                        "credential_source": "recovery",
+                        "credential_source_label": "邮箱验证码找回",
+                    }
+                )
+                logging.getLogger("recovery").error(
+                    f"批量找回失败 email={email}: {exc}"
+                )
+            results.append(result)
+            next_index += 1
+            job.update(
+                results=results,
+                next_index=next_index,
+                completed_count=len(results),
+                success_count=sum(1 for row in results if row.get("ok")),
+                failure_count=sum(1 for row in results if not row.get("ok")),
+                current_email="",
+            )
+            _save_recovery_batch(job)
+            _emit_status(
+                batch_id,
+                "phase",
+                {
+                    "phase": "batch_item_done",
+                    "email": email,
+                    "ok": bool(result.get("ok")),
+                    "index": next_index,
+                    "total": len(items),
+                },
+            )
+
+        failure_count = sum(1 for row in results if not row.get("ok"))
+        success_count = sum(1 for row in results if row.get("ok"))
+        status = "done" if failure_count == 0 else "partial" if success_count else "failed"
+        job.update(
+            status=status,
+            message=(
+                f"批量找回完成：成功 {success_count} / 失败 {failure_count}"
+            ),
+            finished_at=time.time(),
+        )
+        _save_recovery_batch(job)
+        db.finish_run(
+            batch_id,
+            "done" if status == "done" else "failed",
+            "" if status == "done" else job["message"],
+        )
+        payload = {
+            "email": f"批量找回 {len(items)} 个邮箱",
+            "credential_source": "recovery",
+            "credential_source_label": "邮箱验证码找回",
+            "partial": status != "done",
+            "batch_total": len(items),
+            "batch_success": success_count,
+            "batch_failure": failure_count,
+            "batch_results": results,
+            "message": job["message"],
+            "error": "",
+        }
+        _emit_status(
+            batch_id,
+            "done" if status != "failed" else "error",
+            (
+                payload
+                if status != "failed"
+                else {**payload, "message": job["message"]}
+            ),
+        )
+    except Exception as exc:
+        job.update(
+            status="failed",
+            message=f"批量找回异常: {exc}",
+            finished_at=time.time(),
+        )
+        _save_recovery_batch(job)
+        db.finish_run(batch_id, "failed", str(exc), category="unknown")
+        _emit_status(batch_id, "error", {"message": str(exc)})
+    finally:
+        try:
+            root_logger.removeHandler(handler)
+            handler.close()
+        except Exception:
+            pass
+        q = _run_queues.get(batch_id)
+        if q is not None:
+            q.put(None)
+        _current_run.run_id = None
+        with _lock:
+            _recovery_batch_active.discard(batch_id)
+            for item in items:
+                email = str((item or {}).get("email") or "").strip().lower()
+                if email and _recovery_active.get(email) == batch_id:
+                    _recovery_active.pop(email, None)
+
+
+def start_recovery_batch(items: list[dict], options: dict) -> str:
+    batch_id = uuid.uuid4().hex[:12]
+    log_file = LOG_DIR / f"{batch_id}.log"
+    emails = [
+        str(item.get("email") or "").strip().lower()
+        for item in items
+        if str(item.get("email") or "").strip()
+    ]
+    with _lock:
+        busy = next(
+            (email for email in emails if _recovery_active.get(email)),
+            "",
+        )
+        if busy:
+            raise RuntimeError(f"邮箱已有找回任务在运行: {busy}")
+        for email in emails:
+            _recovery_active[email] = batch_id
+    job = {
+        "id": batch_id,
+        "status": "running",
+        "items": items,
+        "options": options,
+        "results": [],
+        "next_index": 0,
+        "completed_count": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "log_path": str(log_file),
+        "created_at": time.time(),
+        "updated_at": time.time(),
+    }
+    try:
+        _save_recovery_batch(job)
+        db.create_run(batch_id, f"批量找回 {len(items)} 个邮箱", str(log_file))
+        q: queue.Queue = queue.Queue()
+        with _lock:
+            _run_queues[batch_id] = q
+            _recovery_batch_active.add(batch_id)
+        thread = threading.Thread(
+            target=_do_recovery_batch,
+            args=(batch_id, log_file, job),
+            daemon=True,
+            name=f"recovery-batch-{batch_id}",
+        )
+        thread.start()
+        return batch_id
+    except Exception:
+        with _lock:
+            for email in emails:
+                if _recovery_active.get(email) == batch_id:
+                    _recovery_active.pop(email, None)
+            _recovery_batch_active.discard(batch_id)
+        raise
+
+
+def get_recovery_batch(batch_id: str) -> Optional[dict]:
+    return db.get_recovery_batch(batch_id)
+
+
+def get_latest_recovery_batch() -> Optional[dict]:
+    return db.get_latest_recovery_batch()
+
+
+def resume_recovery_batches() -> list[str]:
+    """Resume persisted running recovery queues after process restart."""
+    started = []
+    for job in db.list_resumable_recovery_batches():
+        batch_id = str(job.get("id") or "").strip()
+        if not batch_id:
+            continue
+        with _lock:
+            if batch_id in _recovery_batch_active:
+                continue
+            _recovery_batch_active.add(batch_id)
+            _run_queues[batch_id] = queue.Queue()
+            for item in job.get("items") or []:
+                email = str((item or {}).get("email") or "").strip().lower()
+                if email:
+                    _recovery_active[email] = batch_id
+        log_file = Path(str(job.get("log_path") or LOG_DIR / f"{batch_id}.log"))
+        thread = threading.Thread(
+            target=_do_recovery_batch,
+            args=(batch_id, log_file, job),
+            daemon=True,
+            name=f"recovery-batch-resume-{batch_id}",
+        )
+        thread.start()
+        started.append(batch_id)
+    return started
 
 
 def get_run_queue(run_id: str) -> Optional[queue.Queue]:

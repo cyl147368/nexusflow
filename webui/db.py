@@ -115,6 +115,13 @@ def init_db():
             updated_at   REAL NOT NULL,
             payload_json TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS recovery_batches (
+            batch_id     TEXT PRIMARY KEY,
+            status       TEXT NOT NULL,
+            updated_at   REAL NOT NULL,
+            payload_json TEXT NOT NULL
+        );
     """)
     con.commit()
     # 老 DB migrate：error_category 在后期才加，对已建表补列
@@ -1209,6 +1216,73 @@ def get_latest_integration_job() -> Optional[dict]:
         return None
     try:
         return json.loads(row["payload_json"])
+    except Exception:
+        return None
+
+
+def save_recovery_batch(job: dict) -> None:
+    batch_id = str(job.get("id") or "").strip()
+    if not batch_id:
+        return
+    with _lock, closing(_conn()) as con:
+        con.execute(
+            "INSERT INTO recovery_batches(batch_id,status,updated_at,payload_json)"
+            " VALUES (?,?,?,?) ON CONFLICT(batch_id) DO UPDATE SET"
+            " status=excluded.status,updated_at=excluded.updated_at,"
+            " payload_json=excluded.payload_json",
+            (
+                batch_id,
+                str(job.get("status") or "running"),
+                float(job.get("updated_at") or time.time()),
+                json.dumps(job, ensure_ascii=False),
+            ),
+        )
+        con.commit()
+
+
+def get_recovery_batch(batch_id: str) -> Optional[dict]:
+    with closing(_conn()) as con:
+        row = con.execute(
+            "SELECT payload_json FROM recovery_batches WHERE batch_id=?",
+            (str(batch_id or "").strip(),),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["payload_json"])
+    except Exception:
+        return None
+
+
+def list_resumable_recovery_batches() -> list[dict]:
+    with closing(_conn()) as con:
+        rows = con.execute(
+            "SELECT payload_json FROM recovery_batches"
+            " WHERE status IN ('running','paused')"
+            " ORDER BY updated_at ASC"
+        ).fetchall()
+    out = []
+    for row in rows:
+        try:
+            job = json.loads(row["payload_json"])
+        except Exception:
+            continue
+        if isinstance(job, dict):
+            out.append(job)
+    return out
+
+
+def get_latest_recovery_batch() -> Optional[dict]:
+    with closing(_conn()) as con:
+        row = con.execute(
+            "SELECT payload_json FROM recovery_batches"
+            " ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        job = json.loads(row["payload_json"])
+        return job if isinstance(job, dict) else None
     except Exception:
         return None
 
