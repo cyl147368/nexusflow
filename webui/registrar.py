@@ -867,7 +867,8 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
             retry_kind = _recovery_retry_kind(error_text)
             if not result.get("ok") and retry_kind:
                 retries = int(retry_counts.get(email) or 0)
-                if retries < 5:
+                max_retries = 5 if retry_kind == "rate_limit" else 3
+                if retries < max_retries:
                     retries += 1
                     retry_counts[email] = retries
                     base_delay = 60 if retry_kind == "rate_limit" else 15
@@ -879,7 +880,7 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                         status="running",
                         message=(
                             f"{email} 触发{retry_label}错误，{delay} 秒后换代理重试"
-                            f"（第 {retries}/5 次）"
+                            f"（第 {retries}/{max_retries} 次）"
                         ),
                         next_attempt_at=time.time() + delay,
                     )
