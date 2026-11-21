@@ -148,6 +148,41 @@ class AuthFlowDeviceTest(unittest.TestCase):
         self.assertTrue(sent)
         self.assertLessEqual(flow._last_otp_sent_after, time.time() - 590)
 
+    def test_forced_login_otp_continues_to_mailbox_wait(self):
+        class StopAfterMailWait(Exception):
+            pass
+
+        class Mail:
+            def wait_for_otp(self, *args, **kwargs):
+                raise StopAfterMailWait()
+
+        flow = AuthFlow(Config(), env_overrides={"OTP_TIMEOUT": "30"})
+        with (
+            patch.object(flow, "check_proxy", return_value=True),
+            patch.object(flow, "warmup", return_value=True),
+            patch.object(flow, "get_csrf_token", return_value="csrf"),
+            patch.object(flow, "get_auth_url", return_value="https://auth.test"),
+            patch.object(flow, "auth_oauth_init", return_value="device"),
+            patch.object(flow, "get_sentinel_token", return_value="token"),
+            patch.object(
+                flow,
+                "authorize_continue",
+                return_value={
+                    "page": {"type": "login_password"},
+                    "continue_url": "https://auth.openai.com/log-in/password",
+                },
+            ),
+            patch.object(flow, "start_login_password_otp", return_value=True),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                flow.run_protocol_login(
+                    Mail(),
+                    "alias@example.com",
+                    password="",
+                    force_email_otp=True,
+                )
+        self.assertIsInstance(raised.exception.__cause__, StopAfterMailWait)
+
 
 if __name__ == "__main__":
     unittest.main()

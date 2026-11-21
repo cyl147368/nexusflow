@@ -3912,7 +3912,7 @@ class AuthFlow:
                         if not otp_started:
                             raise RuntimeError("无法从密码登录页切换到邮箱验证码登录")
                         otp_sent_at = float(
-                            getattr(flow, "_last_otp_issued_after", otp_sent_at)
+                            getattr(self, "_last_otp_issued_after", otp_sent_at)
                         )
                         otp_code = mail_provider.wait_for_otp(
                             email,
