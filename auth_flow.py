@@ -124,6 +124,7 @@ class AuthFlow:
         self._env_overrides = dict(env_overrides or {})
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
+        self._flow_started_at = time.time()
         self._fingerprint = _stable_firefox_fingerprint()
         self._ua = self._fingerprint["user_agent"]
         self._impersonate_candidates = self._fingerprint.get(
@@ -2343,6 +2344,7 @@ class AuthFlow:
             headers["openai-sentinel-so-token"] = so_token
 
         found_transport_error = False
+        send_started_at = time.time()
         self._last_otp_sent_after = None
         for endpoint in (
             "https://auth.openai.com/api/accounts/passwordless/send-otp",
@@ -2365,7 +2367,7 @@ class AuthFlow:
                 # 409 means the server already considers an OTP challenge
                 # pending. Browser flows continue to poll the mailbox instead
                 # of creating another challenge with a different state.
-                self._last_otp_sent_after = time.time()
+                self._last_otp_sent_after = send_started_at
                 if resp.status_code == 409:
                     # A retry that lands on an existing challenge must not set
                     # the cutoff after the code that was already delivered.
@@ -2377,7 +2379,9 @@ class AuthFlow:
                     ):
                         self._last_otp_sent_after = resend_at
                     else:
-                        self._last_otp_sent_after = time.time() - 600
+                        self._last_otp_sent_after = (
+                            getattr(self, "_flow_started_at", time.time()) - 15
+                        )
                 logger.info("passwordless OTP 已发送或已在等待中")
                 return True
             if resp.status_code not in (400, 404, 405):
@@ -3674,6 +3678,9 @@ class AuthFlow:
         new_password = (new_password or "").strip()
         if not email or len(new_password) < 8:
             raise RuntimeError("密码重置需要邮箱和至少 8 位的新密码")
+        set_otp_mode = getattr(mail_provider, "set_otp_mode", None)
+        if set_otp_mode:
+            set_otp_mode("password_reset")
         # 先按真实代理出口校准时区/语言，再建立 OAuth 状态。否则代理出口在
         # 东南亚、指纹仍是 UTC/en-US 时，warmup 与 authorize/continue 容易
         # 被判成不一致的会话并直接返回 409 invalid_state。
@@ -3829,6 +3836,10 @@ class AuthFlow:
         """
         if not (email or "").strip():
             raise RuntimeError("run_protocol_login 缺少邮箱")
+        if force_email_otp:
+            set_otp_mode = getattr(mail_provider, "set_otp_mode", None)
+            if set_otp_mode:
+                set_otp_mode("login")
 
         if not self.check_proxy():
             logger.warning("网络预检查未通过，继续尝试登录链路以获取精确错误...")

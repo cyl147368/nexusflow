@@ -261,6 +261,14 @@ class MailProvider(ABC):
         """
         return None
 
+    def set_otp_mode(self, mode: str) -> None:
+        """Hint which email flow produced the next OTP.
+
+        Providers with a shared mailbox use this to ignore codes from a
+        different flow (for example a password-reset code while logging in).
+        """
+        return None
+
     # ────────────────────────────────────────────────────
     #  号池语义（默认非池化，pooled 子类按需覆盖）
     # ────────────────────────────────────────────────────

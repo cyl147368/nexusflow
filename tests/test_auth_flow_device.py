@@ -146,7 +146,7 @@ class AuthFlowDeviceTest(unittest.TestCase):
             )
 
         self.assertTrue(sent)
-        self.assertLessEqual(flow._last_otp_sent_after, time.time() - 590)
+        self.assertLessEqual(flow._last_otp_sent_after, time.time() - 10)
 
     def test_forced_login_otp_continues_to_mailbox_wait(self):
         class StopAfterMailWait(Exception):

@@ -24,6 +24,27 @@ class ICloudRelayWaiterTest(unittest.TestCase):
             _is_internal_relay_url("https://relay.example.com/messages/token")
         )
 
+    def test_login_mode_ignores_password_reset_codes(self):
+        provider = ICloudRelayProvider(
+            "alias@icloud.com",
+            "http://mail-hub:8090/mail/example",
+        )
+        provider.set_otp_mode("login")
+        login_message = {
+            "sender": "ChatGPT <noreply@example.com>",
+            "subject": "Kode masuk ChatGPT sementara Anda",
+        }
+        reset_message = {
+            "sender": "ChatGPT <noreply@example.com>",
+            "subject": "Kode reset kata sandi sementara ChatGPT Anda",
+        }
+        self.assertTrue(provider._looks_like_openai(login_message))
+        self.assertFalse(provider._looks_like_openai(reset_message))
+
+        provider.set_otp_mode("password_reset")
+        self.assertFalse(provider._looks_like_openai(login_message))
+        self.assertTrue(provider._looks_like_openai(reset_message))
+
     def test_mailhub_epoch_time_is_used_as_message_timestamp(self):
         messages = parse_relay_html(
             "<main><article><header><b>Your verification code</b>"

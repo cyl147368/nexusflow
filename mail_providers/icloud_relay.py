@@ -761,6 +761,7 @@ class ICloudRelayProvider(MailProvider):
         self.http_timeout = timeout
         self._dead = False
         self.last_persona = None
+        self._otp_mode = "any"
 
         # 凭据只是「读出来备用」，**不据此判断走哪条取件路**。
         # 真正的取件源在第一次 _load 时探测出来，认准后记在 _source 里。
@@ -851,6 +852,13 @@ class ICloudRelayProvider(MailProvider):
     def create_mailbox(self) -> str:
         """地址是配置里填死的，直接返回，不造新地址。"""
         return self.email
+
+    def set_otp_mode(self, mode: str) -> None:
+        normalized = str(mode or "").strip().lower()
+        if normalized in {"login", "password_reset"}:
+            self._otp_mode = normalized
+        else:
+            self._otp_mode = "any"
 
     def _fetch_text(self, url: str) -> str:
         """GET 一个地址，拿原始文本（给 _discover_endpoints 读 JS bundle 用）。"""
@@ -1009,8 +1017,22 @@ class ICloudRelayProvider(MailProvider):
         return f"{m.get('date_str','')}|{m.get('subject','')[:80]}"
 
     def _looks_like_openai(self, m: dict) -> bool:
-        blob = f"{m.get('sender','')} {m.get('subject','')}".lower()
-        return any(h in blob for h in _FROM_HINTS)
+        sender = str(m.get("sender") or "").lower()
+        subject = str(m.get("subject") or "").lower()
+        if not any(h in sender for h in _FROM_HINTS):
+            return False
+        reset_markers = (
+            "reset", "kata sandi", "password", "passwort",
+            "réinitialisation", "パスワード", "密码重置", "重置密码",
+        )
+        is_reset = any(marker in subject for marker in reset_markers)
+        if self._otp_mode == "password_reset":
+            return is_reset
+        if self._otp_mode == "login":
+            # A shared inbox can contain a newer password-reset code than the
+            # actual login code. Never consume reset codes in the login lane.
+            return not is_reset
+        return True
 
     def wait_for_otp(
         self,
