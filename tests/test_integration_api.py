@@ -282,6 +282,102 @@ class IntegrationApiTest(unittest.TestCase):
         ))
         self.assertFalse(integration._is_quota_wait_error("warmup failed"))
 
+    def test_workflow_pools_and_results_are_isolated(self):
+        from webui import db
+
+        db.import_accounts(
+            "legacy@example.com----http://mail-hub/mail/legacy",
+            kind="icloud_relay",
+            workflow_scope="legacy",
+        )
+        db.import_accounts(
+            "integrated@example.com----http://mail-hub/mail/integrated",
+            kind="icloud_relay",
+            workflow_scope="integration",
+        )
+
+        self.assertEqual(db.stats("legacy")["total"], 1)
+        self.assertEqual(db.stats("integration")["total"], 1)
+        self.assertEqual(
+            db.claim_next(kind="icloud_relay", workflow_scope="legacy")["email"],
+            "legacy@example.com",
+        )
+        self.assertIsNone(
+            db.claim_account("integrated@example.com", workflow_scope="legacy")
+        )
+        self.assertEqual(
+            db.claim_account(
+                "integrated@example.com",
+                workflow_scope="integration",
+            )["email"],
+            "integrated@example.com",
+        )
+
+        db.save_registered({
+            "email": "legacy@example.com",
+            "password": "legacy-pass",
+            "access_token": "legacy-at",
+            "workflow_scope": "legacy",
+        })
+        db.save_registered({
+            "email": "integrated@example.com",
+            "password": "integrated-pass",
+            "access_token": "integrated-at",
+            "workflow_scope": "integration",
+        })
+        self.assertEqual(db.count_registered(workflow_scope="legacy"), 1)
+        self.assertEqual(db.count_registered(workflow_scope="integration"), 1)
+        self.assertEqual(
+            db.list_registered(workflow_scope="integration")[0]["email"],
+            "integrated@example.com",
+        )
+
+    def test_stats_api_returns_independent_workflow_counts(self):
+        from webui import db
+
+        db.import_accounts(
+            "legacy-api@example.com----http://mail-hub/mail/legacy",
+            kind="icloud_relay",
+            workflow_scope="legacy",
+        )
+        db.import_accounts(
+            "integration-api@example.com----http://mail-hub/mail/integration",
+            kind="icloud_relay",
+            workflow_scope="integration",
+        )
+
+        legacy = self.client.get("/api/stats?workflow_scope=legacy").json()
+        integration = self.client.get(
+            "/api/stats?workflow_scope=integration"
+        ).json()
+        self.assertEqual(legacy["stats"]["total"], 1)
+        self.assertEqual(integration["stats"]["total"], 1)
+        self.assertEqual(legacy["by_workflow"]["legacy"]["total"], 1)
+        self.assertEqual(
+            legacy["by_workflow"]["integration"]["total"],
+            1,
+        )
+
+    def test_backfill_marks_persisted_integration_aliases(self):
+        from webui import db
+
+        db.import_accounts(
+            "backfill@example.com----http://mail-hub/mail/backfill",
+            kind="icloud_relay",
+            workflow_scope="legacy",
+        )
+        db.save_integration_job({
+            "id": "backfill-job",
+            "status": "running",
+            "mailbox": {"email": "backfill@example.com"},
+            "logs": [],
+        })
+        con = db._conn()
+        db._backfill_integration_scope(con)
+        con.close()
+        row = db.get_account("backfill@example.com")
+        self.assertEqual(row["workflow_scope"], "integration")
+
 
 if __name__ == "__main__":
     unittest.main()

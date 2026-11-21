@@ -685,7 +685,11 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
     _set_job(stage="filling_pool", relay_url=relay_url, mailbox=mailbox)
     _log("取件链接已生成，正在写入主项目邮箱池")
 
-    db.import_accounts(f"{email}----{internal_relay_url}", kind="icloud_relay")
+    db.import_accounts(
+        f"{email}----{internal_relay_url}",
+        kind="icloud_relay",
+        workflow_scope="integration",
+    )
     db.set_setting("mail_source", "icloud_relay")
     if resuming:
         completed = db.get_registered(email)
@@ -706,7 +710,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
         db.reset_to_available(email)
         _log("已释放重启前占用中的邮箱，准备重新启动注册")
 
-    account = db.claim_account(email)
+    account = db.claim_account(email, workflow_scope="integration")
     if not account:
         raise IntegrationError("邮箱已写入号池，但当前无法 claim（可能已使用中或已完成）")
 
@@ -720,6 +724,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
         "otp_timeout": cfg["otp_timeout"],
         "allow_existing_login": True,
         "want_2fa": cfg["want_2fa"],
+        "workflow_scope": "integration",
     })
     _set_job(run_id=run_id, stage="waiting_registration")
     _log(f"主项目注册任务已启动：{run_id}")

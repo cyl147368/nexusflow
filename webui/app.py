@@ -96,6 +96,7 @@ async def basic_auth(request: Request, call_next):
 
 
 class ImportReq(BaseModel):
+    workflow_scope: str = "legacy"
     text: str = Field(..., description="每行一个号，格式由 kind 决定")
     kind: str = Field(
         "",
@@ -105,6 +106,7 @@ class ImportReq(BaseModel):
 
 
 class RegisterReq(BaseModel):
+    workflow_scope: str = "legacy"
     email: Optional[str] = Field(None, description="留空 = 自动 claim 下一个 available")
     want_access_token: bool = True
     want_session_token: bool = True
@@ -117,6 +119,11 @@ class RegisterReq(BaseModel):
     # 缓存 / 直接打 API 的保守兜底：漏传时宁可不绑，也不替调用方做一个不可逆的决定。
     # 真实默认值由前端 form store 的 want2fa / autoWant2fa 决定。
     want_2fa: bool = False
+
+
+def _workflow_scope(value: str, default: str = "") -> str:
+    scope = (value or "").strip().lower()
+    return scope if scope in {"legacy", "integration"} else default
 
 
 # ──────────────────────── API ────────────────────────
@@ -136,7 +143,12 @@ def api_import(req: ImportReq):
         {"ok": false, "message": "...", "errors": [{"line": 3, "error": "..."}]}
     """
     try:
-        result = db.import_accounts(req.text, kind=req.kind)
+        scope = _workflow_scope(req.workflow_scope, "legacy")
+        result = db.import_accounts(
+            req.text,
+            kind=req.kind,
+            workflow_scope=scope,
+        )
     except ImportValidationError as e:
         return JSONResponse(
             status_code=422,
@@ -144,18 +156,39 @@ def api_import(req: ImportReq):
         )
     except MailProviderError as e:
         raise HTTPException(400, str(e))
-    return {"ok": True, **result, "stats": db.stats()}
+    return {
+        "ok": True,
+        **result,
+        "workflow_scope": scope,
+        "stats": db.stats(scope),
+        "by_workflow": db.stats_by_workflow(),
+    }
 
 
 @app.get("/api/accounts")
-def api_accounts(status: str = "", limit: int = 50, offset: int = 0, kind: str = ""):
-    items = db.list_accounts(status=status, limit=limit, offset=offset, kind=kind)
-    total = db.count_accounts(status=status, kind=kind)
+def api_accounts(
+    status: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    kind: str = "",
+    workflow_scope: str = "",
+):
+    scope = _workflow_scope(workflow_scope)
+    items = db.list_accounts(
+        status=status,
+        limit=limit,
+        offset=offset,
+        kind=kind,
+        workflow_scope=scope,
+    )
+    total = db.count_accounts(status=status, kind=kind, workflow_scope=scope)
     return {
         "ok": True,
         "items": items,
         "total": total,
-        "by_kind": db.stats_by_kind(),
+        "workflow_scope": scope,
+        "by_kind": db.stats_by_kind(scope),
+        "stats": db.stats(scope),
     }
 
 
@@ -170,24 +203,44 @@ def api_delete_account(email: str):
 class BulkDeleteReq(BaseModel):
     status: Optional[str] = Field(None, description="available/in_use/done/failed/all")
     emails: Optional[list[str]] = Field(None, description="按 email 列表删")
+    workflow_scope: str = ""
 
 
 @app.post("/api/accounts/bulk_delete")
 def api_bulk_delete(req: BulkDeleteReq):
     """按状态或 email 列表批量删除号池。两个参数二选一（status 优先）。"""
+    scope = _workflow_scope(req.workflow_scope)
     if req.status:
-        n = db.delete_accounts_by_status(req.status)
-        return {"ok": True, "deleted": n, "by": "status", "stats": db.stats()}
+        n = db.delete_accounts_by_status(req.status, workflow_scope=scope)
+        return {
+            "ok": True,
+            "deleted": n,
+            "by": "status",
+            "workflow_scope": scope,
+            "stats": db.stats(scope),
+        }
     if req.emails:
         n = db.delete_accounts_by_emails(req.emails)
-        return {"ok": True, "deleted": n, "by": "emails", "stats": db.stats()}
+        return {
+            "ok": True,
+            "deleted": n,
+            "by": "emails",
+            "workflow_scope": scope,
+            "stats": db.stats(scope),
+        }
     raise HTTPException(400, "需要 status 或 emails")
 
 
 @app.post("/api/accounts/reset_failed")
-def api_reset_failed():
-    n = db.reset_failed_to_available()
-    return {"ok": True, "reset": n, "stats": db.stats()}
+def api_reset_failed(workflow_scope: str = ""):
+    scope = _workflow_scope(workflow_scope)
+    n = db.reset_failed_to_available(workflow_scope=scope)
+    return {
+        "ok": True,
+        "reset": n,
+        "workflow_scope": scope,
+        "stats": db.stats(scope),
+    }
 
 
 @app.post("/api/accounts/reset/{email}")
@@ -213,14 +266,26 @@ def api_bulk_reset(req: BulkResetReq):
 
 
 @app.post("/api/accounts/release_stale")
-def api_release_stale(stale_seconds: int = 1800):
-    n = db.release_stale_in_use(stale_seconds=stale_seconds)
-    return {"ok": True, "released": n, "stats": db.stats()}
+def api_release_stale(stale_seconds: int = 1800, workflow_scope: str = ""):
+    scope = _workflow_scope(workflow_scope)
+    n = db.release_stale_in_use(stale_seconds=stale_seconds, workflow_scope=scope)
+    return {
+        "ok": True,
+        "released": n,
+        "workflow_scope": scope,
+        "stats": db.stats(scope),
+    }
 
 
 @app.get("/api/stats")
-def api_stats():
-    return {"ok": True, "stats": db.stats()}
+def api_stats(workflow_scope: str = ""):
+    scope = _workflow_scope(workflow_scope)
+    return {
+        "ok": True,
+        "workflow_scope": scope,
+        "stats": db.stats(scope),
+        "by_workflow": db.stats_by_workflow(),
+    }
 
 
 # ──────────────────────── 代理连通性测试 ────────────────────────
@@ -287,6 +352,7 @@ def api_proxy_test(req: ProxyTestReq):
 @app.post("/api/register")
 def api_register(req: RegisterReq):
     """启动注册任务，返回 run_id。前端拿 run_id 去 /api/runs/{run_id}/stream 订阅 SSE。"""
+    workflow_scope = _workflow_scope(req.workflow_scope, "legacy")
     mail_source = db.get_setting("mail_source", "outlook")
     try:
         provider_cls = get_provider_class(mail_source)
@@ -307,7 +373,7 @@ def api_register(req: RegisterReq):
             "kind": mail_source,
         }
     elif req.email:
-        account = db.claim_account(req.email)
+        account = db.claim_account(req.email, workflow_scope=workflow_scope)
         if not account:
             raise HTTPException(400, f"邮箱 {req.email} 不可用 (不存在 / 已 in_use / 已完成)")
         if (account.get("kind") or "outlook") != mail_source:
@@ -320,7 +386,10 @@ def api_register(req: RegisterReq):
                 f"当前邮箱来源是 {mail_source}，请先切换来源",
             )
     else:
-        account = db.claim_next(kind=mail_source)
+        account = db.claim_next(
+            kind=mail_source,
+            workflow_scope=workflow_scope,
+        )
         if not account:
             raise HTTPException(
                 400,
@@ -335,6 +404,7 @@ def api_register(req: RegisterReq):
         "otp_timeout": int(req.otp_timeout),
         "allow_existing_login": req.allow_existing_login,
         "want_2fa": req.want_2fa,
+        "workflow_scope": workflow_scope,
     }
     run_id = registrar.start_registration(account, options)
     logger.info(f"[run] {run_id} -> {account['email']} (mail_source={mail_source})")
@@ -406,10 +476,26 @@ def api_run_log(run_id: str, limit: int = 200):
 
 
 @app.get("/api/registered")
-def api_registered(limit: int = 20, offset: int = 0, filter: str = "all"):
-    items = db.list_registered(limit=limit, offset=offset, filter_rt=filter)
-    total = db.count_registered(filter_rt=filter)
-    return {"ok": True, "items": items, "total": total}
+def api_registered(
+    limit: int = 20,
+    offset: int = 0,
+    filter: str = "all",
+    workflow_scope: str = "",
+):
+    scope = _workflow_scope(workflow_scope)
+    items = db.list_registered(
+        limit=limit,
+        offset=offset,
+        filter_rt=filter,
+        workflow_scope=scope,
+    )
+    total = db.count_registered(filter_rt=filter, workflow_scope=scope)
+    return {
+        "ok": True,
+        "items": items,
+        "total": total,
+        "workflow_scope": scope,
+    }
 
 
 @app.get("/api/registered/{email}")
@@ -431,13 +517,20 @@ def api_delete_registered(email: str):
 class BulkDeleteRegisteredReq(BaseModel):
     emails: Optional[list[str]] = Field(None, description="按 email 列表删；留空 + all=true 则删全部")
     all: bool = False
+    workflow_scope: str = ""
 
 
 @app.post("/api/registered/bulk_delete")
 def api_bulk_delete_registered(req: BulkDeleteRegisteredReq):
     if req.all:
-        n = db.delete_all_registered()
-        return {"ok": True, "deleted": n, "by": "all"}
+        scope = _workflow_scope(req.workflow_scope)
+        n = db.delete_all_registered(workflow_scope=scope)
+        return {
+            "ok": True,
+            "deleted": n,
+            "by": "all",
+            "workflow_scope": scope,
+        }
     if req.emails:
         n = db.delete_registered_by_emails(req.emails)
         return {"ok": True, "deleted": n, "by": "emails"}
@@ -461,6 +554,7 @@ class ExportRegisteredReq(BaseModel):
     format: str = Field(..., description="格式 id，见 GET /api/registered/export/formats")
     emails: Optional[list[str]] = Field(None, description="要导出的 email 列表")
     all: bool = Field(False, description="true = 导出全部（跨页），忽略 emails")
+    workflow_scope: str = ""
 
 
 @app.post("/api/registered/export")
@@ -470,7 +564,11 @@ def api_export_registered(req: ExportRegisteredReq):
         raise HTTPException(400, f"未知导出格式: {req.format}")
 
     if req.all:
-        rows = db.list_registered_full(limit=100000)
+        scope = _workflow_scope(req.workflow_scope)
+        rows = db.list_registered_full(
+            limit=100000,
+            workflow_scope=scope,
+        )
     elif req.emails:
         rows = db.list_registered_by_emails(req.emails)
     else:
@@ -1356,7 +1454,12 @@ def api_integration_stop():
 
 @app.get("/api/integration/status")
 def api_integration_status():
-    return {"ok": True, "job": integration.get_job(), "stats": db.stats()}
+    return {
+        "ok": True,
+        "job": integration.get_job(),
+        "stats": db.stats("integration"),
+        "by_workflow": db.stats_by_workflow(),
+    }
 
 
 @app.get("/api/integration/mailbox/{token}/diagnostics")

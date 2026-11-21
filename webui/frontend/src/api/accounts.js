@@ -1,7 +1,8 @@
 import http from './request'
 
 // ──────────────── 统计 ────────────────
-export const getStats = () => http.get('/api/stats')
+export const getStats = (workflowScope = 'legacy') =>
+  http.get('/api/stats', { params: { workflow_scope: workflowScope } })
 
 // ──────────────── 号池 accounts ────────────────
 // kind = 邮箱来源（outlook / ...）。留空后端会按段数猜，
@@ -10,7 +11,7 @@ export const importAccounts = (text, kind = '') =>
   http.post('/api/import', { text, kind })
 
 export const listAccounts = (params) =>
-  http.get('/api/accounts', { params }) // { status, limit, offset, kind }
+  http.get('/api/accounts', { params }) // { status, limit, offset, kind, workflow_scope }
 
 export const deleteAccount = (email) =>
   http.delete(`/api/accounts/${encodeURIComponent(email)}`)
@@ -18,7 +19,10 @@ export const deleteAccount = (email) =>
 export const bulkDeleteAccounts = (payload) =>
   http.post('/api/accounts/bulk_delete', payload) // { status } 或 { emails }
 
-export const resetFailed = () => http.post('/api/accounts/reset_failed')
+export const resetFailed = (workflowScope = '') =>
+  http.post('/api/accounts/reset_failed', null, {
+    params: { workflow_scope: workflowScope },
+  })
 
 export const resetAccount = (email) =>
   http.post(`/api/accounts/reset/${encodeURIComponent(email)}`)
@@ -26,4 +30,7 @@ export const resetAccount = (email) =>
 export const bulkResetAccounts = (emails) =>
   http.post('/api/accounts/bulk_reset', { emails })
 
-export const releaseStale = () => http.post('/api/accounts/release_stale')
+export const releaseStale = (workflowScope = '') =>
+  http.post('/api/accounts/release_stale', null, {
+    params: { workflow_scope: workflowScope },
+  })

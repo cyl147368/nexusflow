@@ -23,6 +23,7 @@ const total = ref(0)
 const page = ref(1)
 const statusFilter = ref('')
 const kindFilter = ref('')
+const workflowFilter = ref('legacy')
 const bulkStatus = ref('')
 const selected = ref([])
 const loading = ref(false)
@@ -45,6 +46,13 @@ function kindLabel(k) {
   return providers.value.find((p) => p.kind === k)?.display_name || k || 'outlook'
 }
 
+function workflowLabel(scope) {
+  return {
+    legacy: '原有流程',
+    integration: '一体化流程',
+  }[scope] || '未分类'
+}
+
 async function loadProviders() {
   try {
     providers.value = (await getMailProviders()).providers || []
@@ -58,6 +66,7 @@ async function load(resetPage) {
     const { items, total: t, by_kind } = await listAccounts({
       status: statusFilter.value,
       kind: kindFilter.value,
+      workflow_scope: workflowFilter.value,
       limit: PAGE_SIZE,
       offset: (page.value - 1) * PAGE_SIZE,
     })
@@ -80,11 +89,11 @@ async function confirm(msg, title = '确认') {
 
 async function resetFailedAll() {
   if (!(await confirm('把所有 failed 号重置为 available？'))) return
-  try { const r = await resetFailed(); ElMessage.success(`重置 ${r.reset} 个`); afterMutate() }
+  try { const r = await resetFailed(workflowFilter.value); ElMessage.success(`重置 ${r.reset} 个`); afterMutate() }
   catch (e) { ElMessage.error(e.message) }
 }
 async function releaseStaleAll() {
-  try { const r = await releaseStale(); ElMessage.success(`释放 ${r.released} 个卡死号`); afterMutate() }
+  try { const r = await releaseStale(workflowFilter.value); ElMessage.success(`释放 ${r.released} 个卡死号`); afterMutate() }
   catch (e) { ElMessage.error(e.message) }
 }
 async function resetSelected() {
@@ -104,11 +113,14 @@ async function deleteSelected() {
 async function bulkDeleteByStatus() {
   if (!bulkStatus.value) { ElMessage.warning('请先选择要删除的状态'); return }
   const tip = bulkStatus.value === 'all'
-    ? '这会删除邮箱列表里所有号（含未注册的），确定？'
-    : `确定删除全部 ${bulkStatus.value} 状态的号？`
+    ? `这会删除“${workflowFilter.value ? workflowLabel(workflowFilter.value) : '全部流程'}”里的所有号（含未注册的），确定？`
+    : `确定删除“${workflowFilter.value ? workflowLabel(workflowFilter.value) : '全部流程'}”中全部 ${bulkStatus.value} 状态的号？`
   if (!(await confirm(tip))) return
   try {
-    const r = await bulkDeleteAccounts({ status: bulkStatus.value })
+    const r = await bulkDeleteAccounts({
+      status: bulkStatus.value,
+      workflow_scope: workflowFilter.value,
+    })
     ElMessage.success(`已删除 ${r.deleted} 个 ${bulkStatus.value} 号`)
     bulkStatus.value = ''
     afterMutate()
@@ -141,6 +153,11 @@ loadProviders()
       </template>
 
       <el-space wrap style="margin-bottom: 12px">
+        <el-select v-model="workflowFilter" style="width: 150px" @change="load(true)">
+          <el-option label="原有流程" value="legacy" />
+          <el-option label="一体化流程" value="integration" />
+          <el-option label="全部流程" value="" />
+        </el-select>
         <el-select v-model="statusFilter" placeholder="全部" style="width: 130px" @change="load(true)">
           <el-option label="全部" value="" />
           <el-option label="available" value="available" />
@@ -189,6 +206,16 @@ loadProviders()
       >
         <el-table-column type="selection" width="44" />
         <el-table-column prop="email" label="邮箱" min-width="220" show-overflow-tooltip />
+        <el-table-column label="流程" width="120">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.workflow_scope === 'integration' ? 'primary' : 'info'"
+            >
+              {{ workflowLabel(row.workflow_scope) }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column v-if="kindOptions.length > 1" label="来源" width="130">
           <template #default="{ row }">
             <el-tag size="small" type="info">{{ kindLabel(row.kind) }}</el-tag>

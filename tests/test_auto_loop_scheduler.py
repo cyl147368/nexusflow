@@ -58,12 +58,15 @@ class AutoLoopSchedulerTest(unittest.TestCase):
             patch("webui.auto_loop.db.list_accounts", return_value=accounts),
             patch(
                 "webui.auto_loop.db.claim_account",
-                side_effect=lambda email: {"email": email},
+                side_effect=lambda email, **_: {"email": email},
             ) as claim,
         ):
             selected = self.controller._claim_account("icloud_relay")
         self.assertEqual(selected["email"], "clean@example.com")
-        claim.assert_called_once_with("clean@example.com")
+        claim.assert_called_once_with(
+            "clean@example.com",
+            workflow_scope="legacy",
+        )
 
     def test_circuit_break_requires_all_resources_at_one_hundred_percent(self):
         accounts = [{"email": "a@example.com"}]

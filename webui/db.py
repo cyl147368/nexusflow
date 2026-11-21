@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -55,6 +56,8 @@ def init_db():
             relay_url       TEXT,       -- 中转取码 URL（icloud 类用，其余留空）
             kind            TEXT NOT NULL DEFAULT 'outlook',
                             -- 邮箱类型，对应 mail_providers 注册表的 kind
+            workflow_scope  TEXT NOT NULL DEFAULT 'legacy',
+                            -- integration / legacy：两套编排互不抢号、独立计数
             status          TEXT NOT NULL DEFAULT 'available',
                             -- available / in_use / done / failed
             imported_at     REAL,
@@ -80,6 +83,7 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS registered (
             email           TEXT PRIMARY KEY,
+            workflow_scope  TEXT NOT NULL DEFAULT 'legacy',
             password        TEXT,
             access_token    TEXT,
             session_token   TEXT,
@@ -133,9 +137,19 @@ def init_db():
     if "relay_url" not in acc_cols:
         con.execute("ALTER TABLE outlook_accounts ADD COLUMN relay_url TEXT")
         con.commit()
+    if "workflow_scope" not in acc_cols:
+        con.execute(
+            "ALTER TABLE outlook_accounts ADD COLUMN workflow_scope TEXT "
+            "NOT NULL DEFAULT 'legacy'"
+        )
+        con.commit()
     # 索引建在补列之后，否则老库上 CREATE INDEX 会因为没有 kind 列而失败
     con.execute(
         "CREATE INDEX IF NOT EXISTS idx_outlook_kind ON outlook_accounts(kind, status)"
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_outlook_workflow_scope "
+        "ON outlook_accounts(workflow_scope, status)"
     )
     con.commit()
 
@@ -143,13 +157,73 @@ def init_db():
     # secret 一次性下发、服务端取不回，务必单独补列持久化。重复执行无副作用。
     cur = con.execute("PRAGMA table_info(registered)")
     reg_cols = {r[1] for r in cur.fetchall()}
+    if "workflow_scope" not in reg_cols:
+        con.execute(
+            "ALTER TABLE registered ADD COLUMN workflow_scope TEXT "
+            "NOT NULL DEFAULT 'legacy'"
+        )
+        con.commit()
     if "totp_secret" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN totp_secret TEXT")
         con.commit()
     if "totp_factor_id" not in reg_cols:
         con.execute("ALTER TABLE registered ADD COLUMN totp_factor_id TEXT")
         con.commit()
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS idx_registered_workflow_scope "
+        "ON registered(workflow_scope, created_at)"
+    )
+    _backfill_integration_scope(con)
     con.close()
+
+
+def _backfill_integration_scope(con: sqlite3.Connection) -> None:
+    """Mark legacy rows created by the unified flow without touching user imports."""
+    emails: set[str] = set()
+    try:
+        rows = con.execute("SELECT payload_json FROM integration_jobs").fetchall()
+    except sqlite3.Error:
+        rows = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except Exception:
+            continue
+
+        def collect(value) -> None:
+            if isinstance(value, dict):
+                email = str(value.get("email") or "").strip().lower()
+                if "@" in email:
+                    emails.add(email)
+                message = str(value.get("message") or "")
+                if message:
+                    match = re.search(
+                        r"([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})",
+                        message,
+                    )
+                    if match:
+                        emails.add(match.group(1).lower())
+                for nested in value.values():
+                    if isinstance(nested, (dict, list)):
+                        collect(nested)
+                return
+            if isinstance(value, list):
+                for nested in value:
+                    collect(nested)
+
+        collect(payload)
+    if not emails:
+        return
+    for email in emails:
+        con.execute(
+            "UPDATE outlook_accounts SET workflow_scope='integration' WHERE email=?",
+            (email,),
+        )
+        con.execute(
+            "UPDATE registered SET workflow_scope='integration' WHERE email=?",
+            (email,),
+        )
+    con.commit()
 
 
 # ──────────────────────── outlook 号池 ────────────────────────
@@ -170,13 +244,20 @@ def parse_lines(text: str, kind: str = "") -> list[dict]:
     return parse_import_text(text or "", kind)
 
 
-def import_accounts(text: str, kind: str = "") -> dict:
+def import_accounts(
+    text: str,
+    kind: str = "",
+    workflow_scope: str = "legacy",
+) -> dict:
     """批量入库。已存在的 email 仅在凭证变化时更新。
 
     解析阶段全对才写：有一行非法就整批拒绝（抛 ImportValidationError），
     不会出现"写进去一半"对不上账的情况。
     """
     rows = parse_lines(text, kind)
+    workflow_scope = (
+        workflow_scope if workflow_scope in {"integration", "legacy"} else "legacy"
+    )
     now = time.time()
     inserted = updated = skipped = 0
     with _lock:
@@ -190,29 +271,38 @@ def import_accounts(text: str, kind: str = "") -> dict:
             relay = r.get("relay_url", "") or ""
 
             cur = con.execute(
-                "SELECT refresh_token, relay_url, kind FROM outlook_accounts WHERE email=?",
+                "SELECT refresh_token, relay_url, kind, workflow_scope "
+                "FROM outlook_accounts WHERE email=?",
                 (r["email"],),
             )
             existing = cur.fetchone()
             if existing is None:
                 con.execute(
                     "INSERT INTO outlook_accounts(email, password, client_id, refresh_token, "
-                    "relay_url, kind, status, imported_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 'available', ?)",
-                    (r["email"], password, client_id, refresh, relay, row_kind, now),
+                    "relay_url, kind, workflow_scope, status, imported_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'available', ?)",
+                    (
+                        r["email"], password, client_id, refresh, relay, row_kind,
+                        workflow_scope, now,
+                    ),
                 )
                 inserted += 1
             elif (
                 (existing["refresh_token"] or "") != refresh
                 or (existing["relay_url"] or "") != relay
                 or (existing["kind"] or "") != row_kind
+                or (existing["workflow_scope"] or "legacy") != workflow_scope
             ):
                 # 凭证或类型变了 → 覆盖并重置为可用
                 con.execute(
                     "UPDATE outlook_accounts SET refresh_token=?, password=?, client_id=?, "
-                    "relay_url=?, kind=?, status='available', imported_at=?, fail_reason=NULL "
+                    "relay_url=?, kind=?, workflow_scope=?, status='available', "
+                    "imported_at=?, fail_reason=NULL "
                     "WHERE email=?",
-                    (refresh, password, client_id, relay, row_kind, now, r["email"]),
+                    (
+                        refresh, password, client_id, relay, row_kind,
+                        workflow_scope, now, r["email"],
+                    ),
                 )
                 updated += 1
             else:
@@ -221,7 +311,7 @@ def import_accounts(text: str, kind: str = "") -> dict:
     return {"parsed": len(rows), "inserted": inserted, "updated": updated, "skipped": skipped}
 
 
-def count_accounts(status: str = "", kind: str = "") -> int:
+def count_accounts(status: str = "", kind: str = "", workflow_scope: str = "") -> int:
     con = _conn()
     sql = "SELECT COUNT(*) FROM outlook_accounts"
     where, args = [], []
@@ -231,13 +321,20 @@ def count_accounts(status: str = "", kind: str = "") -> int:
     if kind:
         where.append("kind=?")
         args.append(kind.strip().lower())
+    if workflow_scope:
+        where.append("workflow_scope=?")
+        args.append(workflow_scope.strip().lower())
     if where:
         sql += " WHERE " + " AND ".join(where)
     return con.execute(sql, args).fetchone()[0]
 
 
 def list_accounts(
-    status: str = "", limit: int = 50, offset: int = 0, kind: str = ""
+    status: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    kind: str = "",
+    workflow_scope: str = "",
 ) -> list[dict]:
     con = _conn()
     sql = "SELECT * FROM outlook_accounts"
@@ -248,6 +345,9 @@ def list_accounts(
     if kind:
         where.append("kind=?")
         args.append(kind.strip().lower())
+    if workflow_scope:
+        where.append("workflow_scope=?")
+        args.append(workflow_scope.strip().lower())
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY imported_at DESC LIMIT ? OFFSET ?"
@@ -255,11 +355,16 @@ def list_accounts(
     return [dict(r) for r in con.execute(sql, args).fetchall()]
 
 
-def stats_by_kind() -> dict:
+def stats_by_kind(workflow_scope: str = "") -> dict:
     """按邮箱类型分组统计，给 WebUI 顶部展示"每种邮箱各有多少号"。"""
     con = _conn()
+    scope = (workflow_scope or "").strip().lower()
+    where = " WHERE workflow_scope=?" if scope else ""
+    args = (scope,) if scope else ()
     cur = con.execute(
-        "SELECT kind, status, COUNT(*) AS n FROM outlook_accounts GROUP BY kind, status"
+        "SELECT kind, status, COUNT(*) AS n FROM outlook_accounts"
+        f"{where} GROUP BY kind, status",
+        args,
     )
     out: dict[str, dict] = {}
     for r in cur.fetchall():
@@ -279,7 +384,7 @@ def get_account(email: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def claim_account(email: str) -> Optional[dict]:
+def claim_account(email: str, workflow_scope: str = "") -> Optional[dict]:
     """原子 claim 指定邮箱（available / failed -> in_use）。
 
     failed 也允许重试 claim：之前 OpenAI 风控误判 / 网络抖动等导致 fail 的号
@@ -293,17 +398,20 @@ def claim_account(email: str) -> Optional[dict]:
         return None
     with _lock:
         con = _conn()
+        scope_sql = " AND workflow_scope=?" if workflow_scope else ""
+        args = (email, workflow_scope) if workflow_scope else (email,)
         cur = con.execute(
-            "SELECT * FROM outlook_accounts WHERE email=? AND status IN ('available', 'failed')",
-            (email,),
+            "SELECT * FROM outlook_accounts WHERE email=? "
+            "AND status IN ('available', 'failed')" + scope_sql,
+            args,
         )
         row = cur.fetchone()
         if not row:
             return None
         rc = con.execute(
             "UPDATE outlook_accounts SET status='in_use', claimed_at=?, fail_reason=NULL "
-            "WHERE email=? AND status IN ('available', 'failed')",
-            (time.time(), email),
+            "WHERE email=? AND status IN ('available', 'failed')" + scope_sql,
+            (time.time(), *args),
         )
         con.commit()
         if rc.rowcount != 1:
@@ -311,7 +419,7 @@ def claim_account(email: str) -> Optional[dict]:
         return dict(row)
 
 
-def claim_next(kind: str = "") -> Optional[dict]:
+def claim_next(kind: str = "", workflow_scope: str = "") -> Optional[dict]:
     """原子 claim 任一 available 号。
 
     kind 指定 → 只从该类型里挑（"选了 gmail 就只跑 gmail 号"）
@@ -321,14 +429,28 @@ def claim_next(kind: str = "") -> Optional[dict]:
     但当前配置选了哪种，就只 claim 哪种，不会串。
     """
     k = (kind or "").strip().lower()
+    scope = (workflow_scope or "").strip().lower()
     with _lock:
         con = _conn()
         for _ in range(50):  # 有限重试，避免并发抢号时无限递归爆栈
-            if k:
+            if k and scope:
+                cur = con.execute(
+                    "SELECT * FROM outlook_accounts WHERE status='available' "
+                    "AND kind=? AND workflow_scope=?"
+                    "ORDER BY imported_at ASC LIMIT 1",
+                    (k, scope),
+                )
+            elif k:
                 cur = con.execute(
                     "SELECT * FROM outlook_accounts WHERE status='available' AND kind=? "
                     "ORDER BY imported_at ASC LIMIT 1",
                     (k,),
+                )
+            elif scope:
+                cur = con.execute(
+                    "SELECT * FROM outlook_accounts WHERE status='available' "
+                    "AND workflow_scope=? ORDER BY imported_at ASC LIMIT 1",
+                    (scope,),
                 )
             else:
                 cur = con.execute(
@@ -415,22 +537,29 @@ def bulk_reset_to_available(emails: list[str]) -> int:
         return rc.rowcount
 
 
-def reset_failed_to_available() -> int:
+def reset_failed_to_available(workflow_scope: str = "") -> int:
     """把所有 failed 号一次性重置为 available（清掉 fail_reason）。返回受影响行数。
 
     场景：代理短暂抽风导致一波号被冤枉标 failed，主人想给它们一次机会。
     """
+    scope = (workflow_scope or "").strip().lower()
+    where = " AND workflow_scope=?" if scope else ""
+    args = (scope,) if scope else ()
     with _lock:
         con = _conn()
         rc = con.execute(
             "UPDATE outlook_accounts SET status='available', fail_reason=NULL, "
-            "finished_at=NULL WHERE status='failed'"
+            "finished_at=NULL WHERE status='failed'" + where,
+            args,
         )
         con.commit()
         return rc.rowcount
 
 
-def release_stale_in_use(stale_seconds: float = 1800) -> int:
+def release_stale_in_use(
+    stale_seconds: float = 1800,
+    workflow_scope: str = "",
+) -> int:
     """把 claimed_at 超过 N 秒还在 in_use 的号释放回 available。
 
     场景：上次 webui 强退/进程崩溃，号卡在 in_use 永远不释放。默认 30 分钟。
@@ -438,10 +567,14 @@ def release_stale_in_use(stale_seconds: float = 1800) -> int:
     with _lock:
         con = _conn()
         cutoff = time.time() - stale_seconds
+        scope = (workflow_scope or "").strip().lower()
+        scope_sql = " AND workflow_scope=?" if scope else ""
+        args = (cutoff, scope) if scope else (cutoff,)
         rc = con.execute(
             "UPDATE outlook_accounts SET status='available', claimed_at=NULL "
-            "WHERE status='in_use' AND (claimed_at IS NULL OR claimed_at < ?)",
-            (cutoff,),
+            "WHERE status='in_use' AND (claimed_at IS NULL OR claimed_at < ?)"
+            + scope_sql,
+            args,
         )
         con.commit()
         return rc.rowcount
@@ -455,19 +588,35 @@ def delete_account(email: str) -> bool:
         return rc.rowcount > 0
 
 
-def delete_accounts_by_status(status: str) -> int:
+def delete_accounts_by_status(status: str, workflow_scope: str = "") -> int:
     """按状态批量删除。status 必须是 available/in_use/done/failed 之一；
     传 'all' 删全部。返回受影响行数。"""
     valid = {"available", "in_use", "done", "failed", "all"}
     s = (status or "").strip().lower()
     if s not in valid:
         return 0
+    scope = (workflow_scope or "").strip().lower()
     with _lock:
         con = _conn()
         if s == "all":
-            rc = con.execute("DELETE FROM outlook_accounts")
+            if scope:
+                rc = con.execute(
+                    "DELETE FROM outlook_accounts WHERE workflow_scope=?",
+                    (scope,),
+                )
+            else:
+                rc = con.execute("DELETE FROM outlook_accounts")
         else:
-            rc = con.execute("DELETE FROM outlook_accounts WHERE status=?", (s,))
+            if scope:
+                rc = con.execute(
+                    "DELETE FROM outlook_accounts WHERE status=? AND workflow_scope=?",
+                    (s, scope),
+                )
+            else:
+                rc = con.execute(
+                    "DELETE FROM outlook_accounts WHERE status=?",
+                    (s,),
+                )
         con.commit()
         return rc.rowcount
 
@@ -488,16 +637,29 @@ def delete_accounts_by_emails(emails: list[str]) -> int:
         return rc.rowcount
 
 
-def stats() -> dict:
+def stats(workflow_scope: str = "") -> dict:
+    scope = (workflow_scope or "").strip().lower()
+    where = " WHERE workflow_scope=?" if scope else ""
+    args = (scope,) if scope else ()
     con = _conn()
     cur = con.execute(
-        "SELECT status, COUNT(*) AS n FROM outlook_accounts GROUP BY status"
+        "SELECT status, COUNT(*) AS n FROM outlook_accounts"
+        f"{where} GROUP BY status",
+        args,
     )
     out = {"available": 0, "in_use": 0, "done": 0, "failed": 0, "total": 0}
     for r in cur.fetchall():
         out[r["status"]] = r["n"]
         out["total"] += r["n"]
     return out
+
+
+def stats_by_workflow() -> dict:
+    return {
+        "all": stats(),
+        "integration": stats("integration"),
+        "legacy": stats("legacy"),
+    }
 
 
 # ──────────────────────── 注册结果存储 ────────────────────────
@@ -512,9 +674,12 @@ def save_registered(d: dict) -> None:
     email = (d.get("email") or "").lower()
     if not email:
         return
+    workflow_scope = str(d.get("workflow_scope") or "legacy").strip().lower()
+    if workflow_scope not in {"integration", "legacy"}:
+        workflow_scope = "legacy"
     password = d.get("password", "") or ""
     extra = {k: v for k, v in d.items() if k not in {
-        "email", "password", "access_token", "session_token", "refresh_token",
+        "email", "workflow_scope", "password", "access_token", "session_token", "refresh_token",
         "id_token", "device_id", "csrf_token", "cookie_header",
         "totp_secret", "totp_factor_id",
     }}
@@ -548,12 +713,13 @@ def save_registered(d: dict) -> None:
                     totp_factor_id = totp_factor_id or (row["totp_factor_id"] or "")
         con.execute(
             "INSERT OR REPLACE INTO registered "
-            "(email, password, access_token, session_token, refresh_token, "
+            "(email, workflow_scope, password, access_token, session_token, refresh_token, "
             "id_token, device_id, csrf_token, cookie_header, "
             "totp_secret, totp_factor_id, extra_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 email,
+                workflow_scope,
                 password,
                 d.get("access_token", ""),
                 d.get("session_token", ""),
@@ -571,7 +737,11 @@ def save_registered(d: dict) -> None:
         con.commit()
 
 
-def save_password_early(email: str, password: str) -> None:
+def save_password_early(
+    email: str,
+    password: str,
+    workflow_scope: str = "legacy",
+) -> None:
     """密码一在 OpenAI 侧生效就落盘，不等整个注册流程跑完。
 
     由 AuthFlow 的 on_password 回调触发（register_password 里 POST 200 之后）。
@@ -588,18 +758,23 @@ def save_password_early(email: str, password: str) -> None:
     """
     email = (email or "").strip().lower()
     password = (password or "").strip()
+    workflow_scope = (
+        workflow_scope if workflow_scope in {"integration", "legacy"} else "legacy"
+    )
     if not email or not password:
         return
     with _lock:
         con = _conn()
         con.execute(
             "INSERT INTO registered "
-            "(email, password, access_token, session_token, refresh_token, "
+            "(email, workflow_scope, password, access_token, session_token, refresh_token, "
             "id_token, device_id, csrf_token, cookie_header, extra_json, created_at) "
-            "VALUES (?, ?, '', '', '', '', '', '', '', ?, ?) "
-            "ON CONFLICT(email) DO UPDATE SET password=excluded.password",
+            "VALUES (?, ?, ?, '', '', '', '', '', '', '', ?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET password=excluded.password, "
+            "workflow_scope=excluded.workflow_scope",
             (
                 email,
+                workflow_scope,
                 password,
                 json.dumps({"pending": True}, ensure_ascii=False),
                 time.time(),
@@ -608,7 +783,12 @@ def save_password_early(email: str, password: str) -> None:
         con.commit()
 
 
-def save_totp_early(email: str, secret: str, factor_id: str = "") -> None:
+def save_totp_early(
+    email: str,
+    secret: str,
+    factor_id: str = "",
+    workflow_scope: str = "legacy",
+) -> None:
     """2FA secret 一从 enroll 响应拿到就落盘，不等整个注册流程跑完。
 
     由 registrar 的 _bind_2fa_hook 触发（钩子在「拿到 session」和「Codex 授权 /
@@ -629,19 +809,24 @@ def save_totp_early(email: str, secret: str, factor_id: str = "") -> None:
     if not email or not secret:
         return
     factor_id = (factor_id or "").strip()
+    workflow_scope = (
+        workflow_scope if workflow_scope in {"integration", "legacy"} else "legacy"
+    )
     with _lock:
         con = _conn()
         con.execute(
             "INSERT INTO registered "
-            "(email, password, access_token, session_token, refresh_token, "
+            "(email, workflow_scope, password, access_token, session_token, refresh_token, "
             "id_token, device_id, csrf_token, cookie_header, "
             "totp_secret, totp_factor_id, extra_json, created_at) "
-            "VALUES (?, '', '', '', '', '', '', '', '', ?, ?, ?, ?) "
+            "VALUES (?, ?, '', '', '', '', '', '', '', '', ?, ?, ?, ?) "
             "ON CONFLICT(email) DO UPDATE SET "
+            "workflow_scope=excluded.workflow_scope, "
             "totp_secret=excluded.totp_secret, "
             "totp_factor_id=excluded.totp_factor_id",
             (
                 email,
+                workflow_scope,
                 secret,
                 factor_id,
                 json.dumps({"pending": True}, ensure_ascii=False),
@@ -754,43 +939,54 @@ def update_plus_check(email: str, plus_info: dict) -> None:
         con.commit()
 
 
-def _registered_where(filt: str) -> str:
+def _registered_where(filt: str, workflow_scope: str = "") -> str:
+    clauses = []
     if filt == "successful":
-        return (
-            "WHERE (length(access_token) > 0 "
+        clauses.append(
+            "(length(access_token) > 0 "
             "OR length(session_token) > 0 "
             "OR length(refresh_token) > 0)"
         )
-    if filt == "has_rt":
-        return "WHERE length(refresh_token) > 0"
-    if filt == "no_rt":
-        return "WHERE coalesce(length(refresh_token),0) = 0"
-    if filt == "unchecked":
-        return "WHERE (extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')"
-    if filt == "free":
-        return "WHERE extra_json LIKE '%\"free\"%'"
-    if filt == "plus":
-        return "WHERE (extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')"
-    if filt == "banned":
-        return "WHERE extra_json LIKE '%\"banned\"%'"
-    if filt == "token_invalid":
+    elif filt == "has_rt":
+        clauses.append("length(refresh_token) > 0")
+    elif filt == "no_rt":
+        clauses.append("coalesce(length(refresh_token),0) = 0")
+    elif filt == "unchecked":
+        clauses.append("(extra_json IS NULL OR extra_json NOT LIKE '%\"plus_check\"%')")
+    elif filt == "free":
+        clauses.append("extra_json LIKE '%\"free\"%'")
+    elif filt == "plus":
+        clauses.append("(extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')")
+    elif filt == "banned":
+        clauses.append("extra_json LIKE '%\"banned\"%'")
+    elif filt == "token_invalid":
         # token_invalid 从 2026-08-10 起会写库，得能筛出来，否则等于埋了：
         # 它既不在 unchecked 里（已有结论），又不在 free/plus/banned 里。
-        return "WHERE extra_json LIKE '%\"token_invalid\"%'"
-    return ""
+        clauses.append("extra_json LIKE '%\"token_invalid\"%'")
+    scope = (workflow_scope or "").strip().lower()
+    if scope in {"integration", "legacy"}:
+        clauses.append(f"workflow_scope='{scope}'")
+    return ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
 
-def count_registered(filter_rt: str = "all") -> int:
+def count_registered(filter_rt: str = "all", workflow_scope: str = "") -> int:
     con = _conn()
-    cur = con.execute(f"SELECT COUNT(*) FROM registered {_registered_where(filter_rt)}")
+    cur = con.execute(
+        f"SELECT COUNT(*) FROM registered {_registered_where(filter_rt, workflow_scope)}"
+    )
     return cur.fetchone()[0]
 
 
-def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") -> list[dict]:
+def list_registered(
+    limit: int = 20,
+    offset: int = 0,
+    filter_rt: str = "all",
+    workflow_scope: str = "",
+) -> list[dict]:
     con = _conn()
-    where = _registered_where(filter_rt)
+    where = _registered_where(filter_rt, workflow_scope)
     cur = con.execute(
-        f"SELECT email, password, totp_secret, "
+        f"SELECT email, workflow_scope, password, totp_secret, "
         f"length(access_token) AS at_len, length(session_token) AS st_len, "
         f"length(refresh_token) AS rt_len, extra_json, created_at FROM registered "
         f"{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -812,7 +1008,10 @@ def list_registered(limit: int = 20, offset: int = 0, filter_rt: str = "all") ->
     return rows
 
 
-def list_registered_full(limit: int = 5000) -> list[dict]:
+def list_registered_full(
+    limit: int = 5000,
+    workflow_scope: str = "",
+) -> list[dict]:
     """返回完整凭证（用于批量导出）。每行同 get_registered 的格式，外加 relay_url。
 
     ⚠️ relay_url（中转取件链接）**不在 registered 表里**，它跟着号池那一行走
@@ -822,11 +1021,15 @@ def list_registered_full(limit: int = 5000) -> list[dict]:
        （只要号池那行还在）；号池行被删掉就是空串，照约定留空、分隔符保留。
     """
     con = _conn()
+    scope = (workflow_scope or "").strip().lower()
+    where = " WHERE r.workflow_scope=?" if scope else ""
+    args = (scope, limit) if scope else (limit,)
     cur = con.execute(
         "SELECT r.*, a.relay_url AS relay_url "
         "FROM registered r LEFT JOIN outlook_accounts a ON a.email = r.email "
+        f"{where} "
         "ORDER BY r.created_at DESC LIMIT ?",
-        (limit,),
+        args,
     )
     out = []
     for row in cur.fetchall():
@@ -918,10 +1121,17 @@ def delete_registered_by_emails(emails: list[str]) -> int:
         return rc.rowcount
 
 
-def delete_all_registered() -> int:
+def delete_all_registered(workflow_scope: str = "") -> int:
+    scope = (workflow_scope or "").strip().lower()
     with _lock:
         con = _conn()
-        rc = con.execute("DELETE FROM registered")
+        if scope:
+            rc = con.execute(
+                "DELETE FROM registered WHERE workflow_scope=?",
+                (scope,),
+            )
+        else:
+            rc = con.execute("DELETE FROM registered")
         con.commit()
         return rc.rowcount
 

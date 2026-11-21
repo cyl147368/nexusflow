@@ -11,7 +11,7 @@ const router = useRouter()
 const theme = useThemeStore()
 const statsStore = useStatsStore()
 const runtime = useRuntimeStore()
-const { stats } = storeToRefs(statsStore)
+const { stats, byWorkflow } = storeToRefs(statsStore)
 const { banner } = storeToRefs(runtime)
 
 const collapse = ref(false)
@@ -44,11 +44,12 @@ function onSearch(path) {
 }
 
 const statPills = computed(() => [
-  { label: '总计', value: stats.value.total, type: 'info' },
-  { label: '可用', value: stats.value.available, type: 'success' },
-  { label: '进行中', value: stats.value.in_use, type: 'warning' },
-  { label: '完成', value: stats.value.done, type: 'primary' },
-  { label: '失败', value: stats.value.failed, type: 'danger' },
+  { label: '原有号池', value: stats.value.total, type: 'info' },
+  { label: '原有可用', value: stats.value.available, type: 'success' },
+  { label: '原有进行中', value: stats.value.in_use, type: 'warning' },
+  { label: '原有失败', value: stats.value.failed, type: 'danger' },
+  { label: '一体号池', value: byWorkflow.value.integration.total, type: 'info' },
+  { label: '一体完成', value: byWorkflow.value.integration.done, type: 'primary' },
 ])
 
 onMounted(() => {

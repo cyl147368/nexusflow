@@ -28,6 +28,7 @@ const rows = ref([])
 const total = ref(0)
 const page = ref(1)
 const filter = ref('successful')
+const workflowFilter = ref('legacy')
 const selected = ref([])
 const loading = ref(false)
 const checking = ref(false)
@@ -42,13 +43,22 @@ const PLUS_TYPE = {
   banned: 'danger', error: 'danger',
 }
 function plusOf(row) { return row.plus_check || null }
+function workflowLabel(scope) {
+  return {
+    legacy: '原有流程',
+    integration: '一体化流程',
+  }[scope] || '未分类'
+}
 
 async function load(resetPage) {
   if (resetPage) page.value = 1
   loading.value = true
   try {
     const { items, total: t } = await listRegistered({
-      limit: PAGE_SIZE, offset: (page.value - 1) * PAGE_SIZE, filter: filter.value,
+      limit: PAGE_SIZE,
+      offset: (page.value - 1) * PAGE_SIZE,
+      filter: filter.value,
+      workflow_scope: workflowFilter.value,
     })
     rows.value = items
     total.value = t
@@ -119,9 +129,19 @@ async function deleteSelected() {
   catch (e) { ElMessage.error(e.message) }
 }
 async function deleteAll() {
-  if (!(await confirm('这会清空注册结果表里的所有凭证！邮箱列表不受影响，确定？'))) return
+  const scopeName = workflowFilter.value === 'integration'
+    ? '一体化流程'
+    : workflowFilter.value === 'legacy' ? '原有流程' : '全部流程'
+  if (!(await confirm(`这会清空“${scopeName}”注册结果里的所有凭证！邮箱列表不受影响，确定？`))) return
   if (!(await confirm('再次确认：真的要删除全部凭证吗？此操作不可恢复！'))) return
-  try { const r = await bulkDeleteRegistered({ all: true }); ElMessage.success(`已清空 ${r.deleted} 条`); load() }
+  try {
+    const r = await bulkDeleteRegistered({
+      all: true,
+      workflow_scope: workflowFilter.value,
+    })
+    ElMessage.success(`已清空 ${r.deleted} 条`)
+    load()
+  }
   catch (e) { ElMessage.error(e.message) }
 }
 
@@ -158,7 +178,9 @@ async function loadExportFormats() {
 async function doExport(fmt) {
   const emails = selected.value.map((r) => r.email)
   // 没勾选 = 导出全部（跨页，不只当前页）
-  const payload = emails.length ? { format: fmt.id, emails } : { format: fmt.id, all: true }
+  const payload = emails.length
+    ? { format: fmt.id, emails }
+    : { format: fmt.id, all: true, workflow_scope: workflowFilter.value }
   exporting.value = true
   try {
     const r = await exportRegistered(payload)
@@ -353,6 +375,11 @@ onActivated(() => load())
 
       <el-space wrap style="margin-bottom: 12px">
         <el-button @click="load(false)"><el-icon><Refresh /></el-icon>刷新</el-button>
+        <el-select v-model="workflowFilter" style="width: 150px" @change="load(true)">
+          <el-option label="原有流程" value="legacy" />
+          <el-option label="一体化流程" value="integration" />
+          <el-option label="全部流程" value="" />
+        </el-select>
         <el-select v-model="filter" style="width: 130px" @change="load(true)">
           <el-option label="完整凭证" value="successful" />
           <el-option label="全部" value="all" />
@@ -408,6 +435,16 @@ onActivated(() => load())
       >
         <el-table-column type="selection" width="44" />
         <el-table-column prop="email" label="邮箱" min-width="200" show-overflow-tooltip />
+        <el-table-column label="流程" width="120">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.workflow_scope === 'integration' ? 'primary' : 'info'"
+            >
+              {{ workflowLabel(row.workflow_scope) }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <!-- 密码直接明文列出：随机 16 位，是登录账号的必需品，
              藏进「查看凭证」弹窗每次都要多点两下。列表接口本来就在返回它。
              图标放在文字**后面**：放前面会把值整体右推 27px（见 .cell-copy 注释）。 -->

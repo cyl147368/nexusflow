@@ -42,6 +42,9 @@ const aliasPage = ref(1)
 const aliasPageSize = ref(20)
 const aliasActionBusy = ref('')
 const registeredTotal = ref(0)
+const integrationStats = ref({
+  total: 0, available: 0, in_use: 0, done: 0, failed: 0,
+})
 const job = ref({ status: 'idle', stage: 'idle', logs: [] })
 const mailboxDiagnostic = ref(null)
 const proxyStore = useProxyStore()
@@ -203,7 +206,12 @@ async function load() {
 
 async function loadRegisteredCount() {
   try {
-    const result = await listRegistered({ limit: 1, offset: 0, filter: 'successful' })
+    const result = await listRegistered({
+      limit: 1,
+      offset: 0,
+      filter: 'successful',
+      workflow_scope: 'integration',
+    })
     registeredTotal.value = Number(result.total || 0)
   } catch (_) {
     // 注册结果数量不影响配置页面加载。
@@ -374,6 +382,7 @@ async function refreshStatus() {
     const previousStatus = job.value.status
     const previousSuccesses = Number(job.value.success_count || 0)
     job.value = r.job || job.value
+    integrationStats.value = r.stats || integrationStats.value
     running.value = ['running', 'paused', 'stopping'].includes(job.value.status)
     if (
       Number(job.value.success_count || 0) > previousSuccesses
@@ -819,6 +828,7 @@ startPolling()
         <div class="run-meta">
           <div><span>当前阶段</span><b>{{ stageLabel }}</b></div>
           <div><span>累计注册成功</span><b>{{ registeredTotal }}</b></div>
+          <div><span>一体化邮箱池</span><b>可用 {{ integrationStats.available }} / 进行中 {{ integrationStats.in_use }} / 失败 {{ integrationStats.failed }}</b></div>
           <div v-if="job.cycle_no"><span>连续轮次</span><b>第 {{ job.cycle_no }} 轮</b></div>
           <div v-if="job.success_count || job.failure_count">
             <span>本次运行</span>

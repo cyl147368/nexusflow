@@ -183,7 +183,7 @@ class AutoLoopController:
 
     def _snapshot(self) -> dict:
         with self._lock:
-            stats = db.stats()
+            stats = db.stats("legacy")
             workers_info = [
                 {
                     "id": wid,
@@ -387,7 +387,12 @@ class AutoLoopController:
 
     def _claim_account(self, kind: str) -> Optional[dict]:
         """Prefer clean accounts and move repeatedly failing accounts to the end."""
-        candidates = db.list_accounts(status="available", limit=2000, kind=kind)
+        candidates = db.list_accounts(
+            status="available",
+            limit=2000,
+            kind=kind,
+            workflow_scope="legacy",
+        )
         with self._lock:
             def score(account: dict) -> tuple:
                 email = str(account.get("email") or "").lower()
@@ -408,7 +413,10 @@ class AutoLoopController:
 
             candidates.sort(key=score)
         for account in candidates:
-            claimed = db.claim_account(str(account.get("email") or ""))
+            claimed = db.claim_account(
+                str(account.get("email") or ""),
+                workflow_scope="legacy",
+            )
             if claimed:
                 return claimed
         return None
@@ -416,7 +424,12 @@ class AutoLoopController:
     def _resources_fully_failed(self) -> bool:
         """True only when every remaining account and proxy has a 100% error rate."""
         kind = db.get_setting("mail_source", "outlook")
-        accounts = db.list_accounts(status="available", limit=2000, kind=kind)
+        accounts = db.list_accounts(
+            status="available",
+            limit=2000,
+            kind=kind,
+            workflow_scope="legacy",
+        )
         with self._lock:
             if not accounts or not self._proxy_candidates():
                 return False
@@ -650,6 +663,7 @@ class AutoLoopController:
             # 给这个 run 注入 worker 自己的代理
             proxy = self._acquire_proxy(worker_id)
             run_options = dict(self._options)
+            run_options["workflow_scope"] = "legacy"
             if proxy and proxy != "direct":
                 run_options["proxy"] = proxy
             else:

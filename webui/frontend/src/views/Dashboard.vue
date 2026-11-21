@@ -7,16 +7,18 @@ import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
 
 const router = useRouter()
-const { stats } = storeToRefs(useStatsStore())
+const { stats, byWorkflow } = storeToRefs(useStatsStore())
 const { autoStatus } = storeToRefs(useRuntimeStore())
 
-const cards = computed(() => [
-  { label: '总计', value: stats.value.total, color: 'var(--brand)', icon: 'Files' },
-  { label: '可用 available', value: stats.value.available, color: '#4caf50', icon: 'CircleCheck' },
-  { label: '进行中 in_use', value: stats.value.in_use, color: '#ff9800', icon: 'Loading' },
-  { label: '已完成 done', value: stats.value.done, color: '#2196f3', icon: 'Select' },
-  { label: '失败 failed', value: stats.value.failed, color: '#e53935', icon: 'CircleClose' },
-])
+const makeCards = (pool) => [
+  { label: '总计', value: pool.total, color: 'var(--brand)', icon: 'Files' },
+  { label: '可用 available', value: pool.available, color: '#4caf50', icon: 'CircleCheck' },
+  { label: '进行中 in_use', value: pool.in_use, color: '#ff9800', icon: 'Loading' },
+  { label: '已完成 done', value: pool.done, color: '#2196f3', icon: 'Select' },
+  { label: '失败 failed', value: pool.failed, color: '#e53935', icon: 'CircleClose' },
+]
+const legacyCards = computed(() => makeCards(stats.value))
+const integrationCards = computed(() => makeCards(byWorkflow.value.integration))
 
 const autoStateLabel = computed(() => ({
   stopped: '未运行', running: '运行中', paused: '已暂停',
@@ -28,8 +30,29 @@ const autoStateType = computed(() => ({
 
 <template>
   <div class="page">
+    <div class="workflow-title">原有流程 / 批量流程</div>
     <el-row :gutter="16">
-      <el-col v-for="c in cards" :key="c.label" :xs="12" :sm="8" :md="4" style="margin-bottom: 16px">
+      <el-col v-for="c in legacyCards" :key="c.label" :xs="12" :sm="8" :md="4" style="margin-bottom: 16px">
+        <el-card class="stat-card" shadow="hover">
+          <div style="display: flex; align-items: center; justify-content: space-between">
+            <div>
+              <div class="stat-value" :style="{ color: c.color }">{{ c.value }}</div>
+              <div class="stat-label">{{ c.label }}</div>
+            </div>
+            <el-icon :size="30" :style="{ color: c.color, opacity: 0.5 }"><component :is="c.icon" /></el-icon>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <div class="workflow-title integration">一体化流程</div>
+    <el-row :gutter="16">
+      <el-col
+        v-for="c in integrationCards"
+        :key="`integration-${c.label}`"
+        :xs="12" :sm="8" :md="4"
+        style="margin-bottom: 16px"
+      >
         <el-card class="stat-card" shadow="hover">
           <div style="display: flex; align-items: center; justify-content: space-between">
             <div>
@@ -71,3 +94,16 @@ const autoStateType = computed(() => ({
     </el-row>
   </div>
 </template>
+
+<style scoped>
+.workflow-title {
+  margin: 2px 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+}
+.workflow-title.integration {
+  margin-top: 6px;
+  color: var(--el-color-primary);
+}
+</style>

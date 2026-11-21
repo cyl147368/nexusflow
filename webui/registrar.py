@@ -181,6 +181,9 @@ def _do_register(
         root_logger.setLevel(logging.INFO)
 
     email = account["email"]
+    workflow_scope = str(options.get("workflow_scope") or "legacy").strip().lower()
+    if workflow_scope not in {"integration", "legacy"}:
+        workflow_scope = "legacy"
     # 提前读取，避免在 try 块前异常时 except 引用未定义
     mail_source = db.get_setting("mail_source", "outlook")
     # 要不要操作号池（mark_done / mark_failed / release）由 provider 声明的
@@ -251,7 +254,12 @@ def _do_register(
                 #   这里绝不能拖垮注册，包一层 try：落盘失败也还有 _tfa_box 兜着。
                 try:
                     real_email = getattr(getattr(_flow, "result", None), "email", "") or email
-                    db.save_totp_early(real_email, info["secret"], info.get("factor_id", ""))
+                    db.save_totp_early(
+                        real_email,
+                        info["secret"],
+                        info.get("factor_id", ""),
+                        workflow_scope=workflow_scope,
+                    )
                     logging.getLogger("registrar").info(
                         f"[register] 2FA secret 已早落盘 email={real_email}"
                     )
@@ -281,7 +289,11 @@ def _do_register(
             cfg,
             sms_callback=_build_sms_callback(run_id),
             env_overrides=env_overrides,
-            on_password=_save_password_early,
+            on_password=lambda address, password: _save_password_early(
+                address,
+                password,
+                workflow_scope,
+            ),
             on_session_ready=_bind_2fa_hook if options.get("want_2fa") else None,
             account_callback=_account_callback_for_flow,
         )
@@ -325,6 +337,7 @@ def _do_register(
         d = {
             "email": full.get("email", ""),
             "password": full.get("password", ""),
+            "workflow_scope": workflow_scope,
         }
         if options.get("want_access_token", True):
             d["access_token"] = full.get("access_token", "")
@@ -549,7 +562,11 @@ def _try_export_to_panels(run_id: str, cred: dict) -> None:
         pass
 
 
-def _save_password_early(email: str, password: str) -> None:
+def _save_password_early(
+    email: str,
+    password: str,
+    workflow_scope: str = "legacy",
+) -> None:
     """AuthFlow 的 on_password 回调：密码在 OpenAI 侧一生效就落盘。
 
     以前密码只在流程**全部**跑通后才随 save_registered 一起入库，
@@ -561,7 +578,7 @@ def _save_password_early(email: str, password: str) -> None:
     """
     log = logging.getLogger("registrar")
     try:
-        db.save_password_early(email, password)
+        db.save_password_early(email, password, workflow_scope=workflow_scope)
         log.info(f"[register] 密码已落盘: {email}（凭证待补）")
     except Exception as e:
         # 落盘失败不能影响注册；下面 except 里那行 ERROR 日志仍然是兜底
