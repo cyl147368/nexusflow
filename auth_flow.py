@@ -2352,8 +2352,13 @@ class AuthFlow:
             request_headers["x-openai-document-navigation-id"] = str(uuid.uuid4())
             for key in list(request_headers):
                 if key.lower() == "content-type":
-                    request_headers[key] = None
-            resp = self.session.post(endpoint, headers=request_headers, timeout=30)
+                    request_headers[key] = "application/json"
+            resp = self.session.post(
+                endpoint,
+                headers=request_headers,
+                json={},
+                timeout=30,
+            )
             self._trace_http("send_passwordless_otp", resp)
             if resp.status_code in (200, 409):
                 # 409 means the server already considers an OTP challenge
