@@ -338,6 +338,8 @@ def _do_register(
             "email": full.get("email", ""),
             "password": full.get("password", ""),
             "workflow_scope": workflow_scope,
+            "credential_source": "registration",
+            "credential_source_label": "自动注册",
         }
         if options.get("want_access_token", True):
             d["access_token"] = full.get("access_token", "")
@@ -433,6 +435,10 @@ def _do_register(
 
         result_summary = {
             "email": d.get("email"),
+            "credential_source": d.get("credential_source") or "registration",
+            "credential_source_label": (
+                d.get("credential_source_label") or "自动注册"
+            ),
             # 密码走明文推给前端：token 只给长度是因为太长且必须点按钮复制，
             # 但密码是随机 16 位、用户注册完第一件事就是拿去登录，
             # 藏在「查看凭证」弹窗里等于每次都要多点两下。
@@ -501,6 +507,70 @@ def _do_register(
         # 线程标记清掉。理论上线程跑完就回收了，但 threading.local 是绑在
         # 线程对象上的，万一以后换成线程池复用线程，残留的 run_id 会让下一个
         # 任务的日志全被投递到上一个 run 的（已关闭的）文件里去。
+        _current_run.run_id = None
+
+
+def _do_recovery(
+    run_id: str,
+    account: dict,
+    options: dict,
+    log_file: Path,
+) -> None:
+    """Run the email-OTP recovery workflow and publish it as a normal run."""
+    _current_run.run_id = run_id
+    handler = QueueLogHandler(run_id, log_file)
+    handler.setLevel(logging.INFO)
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    if root_logger.level > logging.INFO or root_logger.level == 0:
+        root_logger.setLevel(logging.INFO)
+
+    email = account["email"]
+    try:
+        from .account_recovery import RecoveryError, recover_account
+
+        payload = recover_account(
+            account,
+            options,
+            log=lambda message: logging.getLogger("recovery").info(message),
+            phase=lambda name, data: _emit_status(
+                run_id,
+                "phase",
+                {"phase": name, **(data or {})},
+            ),
+        )
+        db.finish_run(run_id, "done")
+        _emit_status(run_id, "done", payload)
+        logging.getLogger("recovery").info(
+            f"账号找回完成 email={email} 来源=邮箱验证码"
+        )
+    except Exception as exc:
+        payload = dict(getattr(exc, "payload", {}) or {})
+        error = str(exc)
+        category = classify_error(error, account.get("kind") or "icloud_relay")
+        db.finish_run(run_id, "failed", error, category=category)
+        _emit_status(
+            run_id,
+            "error",
+            {
+                "message": error,
+                "category": category,
+                "email": email,
+                **payload,
+            },
+        )
+        logging.getLogger("recovery").error(
+            f"账号找回失败 email={email}: {error}"
+        )
+    finally:
+        try:
+            root_logger.removeHandler(handler)
+            handler.close()
+        except Exception:
+            pass
+        q = _run_queues.get(run_id)
+        if q is not None:
+            q.put(None)
         _current_run.run_id = None
 
 
@@ -640,6 +710,26 @@ def start_registration(account: dict, options: dict) -> str:
         name=f"register-{run_id}",
     )
     th.start()
+    return run_id
+
+
+def start_recovery(account: dict, options: dict) -> str:
+    """Start an asynchronous email-OTP recovery run."""
+    run_id = uuid.uuid4().hex[:12]
+    log_file = LOG_DIR / f"{run_id}.log"
+    db.create_run(run_id, account["email"], str(log_file))
+
+    q: queue.Queue = queue.Queue()
+    with _lock:
+        _run_queues[run_id] = q
+
+    thread = threading.Thread(
+        target=_do_recovery,
+        args=(run_id, account, options, log_file),
+        daemon=True,
+        name=f"recovery-{run_id}",
+    )
+    thread.start()
     return run_id
 
 

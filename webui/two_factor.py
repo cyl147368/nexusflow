@@ -70,6 +70,47 @@ def verify_totp(secret_b32: str, code: str) -> bool:
     return code in {hotp(secret_b32, c + d) for d in (-1, 0, 1)}
 
 
+def get_totp_status(flow: AuthFlow, access_token: str = "") -> dict:
+    """Return the server-side TOTP state without changing the account."""
+    access_token = access_token or getattr(
+        getattr(flow, "result", None),
+        "access_token",
+        "",
+    )
+    if not access_token:
+        return {
+            "checked": False,
+            "enabled": False,
+            "totp": False,
+            "error": "missing_access_token",
+        }
+    headers = flow._common_headers(
+        "https://chatgpt.com/backend-api/accounts/mfa_info"
+    )
+    headers["Authorization"] = f"Bearer {access_token}"
+    response = flow.session.get(
+        "https://chatgpt.com/backend-api/accounts/mfa_info",
+        headers=headers,
+        timeout=30,
+    )
+    if response.status_code != 200:
+        return {
+            "checked": False,
+            "enabled": False,
+            "totp": False,
+            "status_code": response.status_code,
+            "error": (response.text or "")[:300],
+        }
+    info = response.json() or {}
+    factors = info.get("factors") or {}
+    return {
+        "checked": True,
+        "enabled": bool(info.get("mfa_enabled")),
+        "totp": bool(factors.get("totp")),
+        "factors": factors,
+    }
+
+
 # ── 真正干活的三步：查已绑 → enroll → activate ────────────────────
 def _enroll_and_activate(flow: AuthFlow, at: str) -> dict | None:
     """拿 flow.session + access_token 完成 enroll/activate，成功返回 dict。

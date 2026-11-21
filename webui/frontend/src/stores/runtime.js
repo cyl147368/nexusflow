@@ -51,18 +51,21 @@ export const useRuntimeStore = defineStore('runtime', () => {
           const d = JSON.parse(e.data)
           if (d.kind === 'done') {
             lastRunResult.value = {
-              email: d.email,
+              ...d,
               password: d.password || '',
-              access_token_len: d.access_token_len,
-              partial: d.partial,
+              access_token_len: d.access_token_len || 0,
+              partial: Boolean(d.partial),
             }
             addLog(
-              `注册完成: ${d.email}${d.password ? ' / ' + d.password : ''}`
+              `${d.credential_source_label || '注册'}完成: ${d.email}${d.password ? ' / ' + d.password : ''}`
               + ` (access_token=${d.access_token_len}${d.partial ? ', 部分凭证' : ''})`,
               'ok',
             )
           } else if (d.kind === 'error') {
-            lastRunResult.value = { email: d.email, error: d.message }
+            lastRunResult.value = {
+              ...d,
+              error: d.message || d.error || '处理失败',
+            }
             addLog('错误: ' + d.message, 'err')
           } else if (d.kind === 'phase') {
             addLog(`phase=${d.phase} email=${d.email}`, 'evt')

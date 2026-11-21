@@ -378,6 +378,89 @@ class IntegrationApiTest(unittest.TestCase):
         row = db.get_account("backfill@example.com")
         self.assertEqual(row["workflow_scope"], "integration")
 
+    def test_recovery_start_accepts_manual_relay_url(self):
+        with patch("webui.registrar.start_recovery", return_value="recovery-run") as start:
+            response = self.client.post(
+                "/api/recovery/start",
+                json={
+                    "email": "recover@example.com",
+                    "relay_url": "https://mail.example/recover",
+                    "want_2fa": True,
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["run_id"], "recovery-run")
+        account = start.call_args.args[0]
+        self.assertEqual(account["relay_url"], "https://mail.example/recover")
+        self.assertEqual(account["workflow_scope"], "legacy")
+
+    def test_recovery_marks_result_source_and_resets_password(self):
+        from webui import account_recovery, db
+
+        class FakeFlow:
+            def __init__(self):
+                self.password = ""
+
+            def run_protocol_login(self, mail, email, password="", force_email_otp=False):
+                self.email = email
+                self.force_email_otp = force_email_otp
+
+                class Result:
+                    @staticmethod
+                    def to_dict():
+                        return {
+                            "email": email,
+                            "password": "",
+                            "access_token": "recovered-at",
+                            "session_token": "recovered-st",
+                            "refresh_token": "",
+                            "cookie_header": "oai-did=test",
+                        }
+
+                return Result()
+
+            def set_or_reset_password(self, email, password):
+                self.password = password
+                return {"ok": True}
+
+        fake = FakeFlow()
+        with (
+            patch.object(
+                account_recovery,
+                "create_mail_provider",
+                return_value=object(),
+            ),
+            patch.object(account_recovery, "AuthFlow", return_value=fake),
+            patch(
+                "webui.two_factor.get_totp_status",
+                return_value={"checked": True, "enabled": False, "totp": False},
+            ),
+            patch(
+                "webui.two_factor.bind_totp_2fa_inline",
+                return_value={"secret": "JBSWY3DPEHPK3PXP", "factor_id": "factor"},
+            ),
+        ):
+            result = account_recovery.recover_account(
+                {"email": "recovered@example.com"},
+                {
+                    "relay_url": "https://mail.example/recovered",
+                    "new_password": "NewPassword1!",
+                    "want_2fa": True,
+                    "workflow_scope": "legacy",
+                },
+            )
+
+        self.assertTrue(fake.force_email_otp)
+        self.assertEqual(result["credential_source"], "recovery")
+        self.assertEqual(result["password"], "NewPassword1!")
+        saved = db.get_registered("recovered@example.com")
+        self.assertEqual(saved["password"], "NewPassword1!")
+        self.assertEqual(saved["totp_secret"], "JBSWY3DPEHPK3PXP")
+        listed = db.list_registered(workflow_scope="legacy")
+        row = next(item for item in listed if item["email"] == "recovered@example.com")
+        self.assertEqual(row["credential_source"], "recovery")
+        self.assertEqual(row["credential_source_label"], "邮箱验证码找回")
+
 
 if __name__ == "__main__":
     unittest.main()

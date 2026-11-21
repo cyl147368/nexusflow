@@ -2220,6 +2220,79 @@ class AuthFlow:
         return True
 
     # ── Step 7: 发送 OTP ──
+    def set_or_reset_password(self, email: str, password: str) -> dict:
+        """Set a password on an authenticated passwordless account.
+
+        OpenAI's account credential endpoint is also the reset endpoint for
+        browser sessions created through email OTP.  A successful 200 response
+        means the submitted value is now the account password; callers must
+        persist it immediately.
+        """
+        email = (email or "").strip().lower()
+        password = (password or "").strip()
+        if not email or not password:
+            raise RuntimeError("设置密码需要 email 和 password")
+        if not self.result.access_token:
+            raise RuntimeError("登录会话缺少 access_token，无法设置密码")
+
+        try:
+            self.session.get(
+                "https://auth.openai.com/create-account/password",
+                headers=self._common_headers("https://auth.openai.com/create-account"),
+                timeout=15,
+            )
+        except Exception:
+            pass
+
+        so_token_for_request = ""
+        try:
+            from sentinel import get_sentinel_token as _get_st
+
+            token, so_token = _get_st(
+                self.session,
+                device_id=self.result.device_id,
+                flow="username_password_create",
+                **self._sentinel_fp_kwargs(),
+            )
+            self._last_sentinel_token = token or ""
+            so_token_for_request = so_token or ""
+        except Exception as exc:
+            logger.warning(f"设置密码前刷新 sentinel 失败: {exc}")
+
+        headers = self._common_headers(
+            "https://auth.openai.com/create-account/password"
+        )
+        headers["Content-Type"] = "application/json"
+        if self._last_sentinel_token:
+            headers["openai-sentinel-token"] = self._last_sentinel_token
+        if so_token_for_request:
+            headers["openai-sentinel-so-token"] = so_token_for_request
+        response = self.session.post(
+            "https://auth.openai.com/api/accounts/user/register",
+            headers=headers,
+            json={"password": password, "username": email},
+            timeout=30,
+        )
+        self._trace_http("set_or_reset_password", response)
+        if response.status_code != 200:
+            body = (response.text or "")[:500]
+            raise RuntimeError(
+                f"设置/重置密码失败: {response.status_code} - {body}"
+            )
+        self.result.password = password
+        if self._on_password is not None:
+            try:
+                self._on_password(email, password)
+            except Exception as exc:
+                logger.warning(f"设置密码后落盘回调失败: {exc}")
+        return {
+            "ok": True,
+            "status_code": response.status_code,
+            "continue_url": self._normalize_continue_url(
+                self._extract_continue_url_from_step(response)
+            ),
+        }
+
     def send_otp(self, referer: str = "https://auth.openai.com/create-account/password"):
         logger.info(f"[6/10] 发送 OTP (referer={referer.split('/')[-1]})...")
         headers = self._common_headers(referer)
@@ -3507,7 +3580,13 @@ class AuthFlow:
         return self.result
 
     # ── 纯协议已有账号登录流程（目标：拿 callback/session/refresh） ──
-    def run_protocol_login(self, mail_provider: MailProvider, email: str, password: str = "") -> AuthResult:
+    def run_protocol_login(
+        self,
+        mail_provider: MailProvider,
+        email: str,
+        password: str = "",
+        force_email_otp: bool = False,
+    ) -> AuthResult:
         """
         纯协议登录（不创建随机邮箱）：
         - 适配 passwordless / login_password 两类已有账号入口
@@ -3538,7 +3617,9 @@ class AuthFlow:
         email = email.strip()
         self.result.email = email
         login_password = (password or "").strip()
-        if login_password:
+        if force_email_otp:
+            login_password = ""
+        elif login_password:
             self.result.password = login_password
         else:
             login_password, pw_is_real = self._resolve_login_password(email)
@@ -3589,7 +3670,33 @@ class AuthFlow:
                     # 命中已有账号 password 路径：标记之，让 kickoff_otp_delivery 走 resend
                     # 分支（避免 send_passwordless_otp 把 state 弄坏 → wrong_email_otp_code）
                     self._is_existing_account = True
-                    login_resp = self.login_password_verify(login_password)
+                    if force_email_otp:
+                        otp_sent_at = time.time()
+                        otp_started = self.send_passwordless_otp(
+                            "https://auth.openai.com/log-in"
+                        )
+                        if not otp_started:
+                            otp_started = self.resend_otp(
+                                "https://auth.openai.com/email-verification"
+                            )
+                        if not otp_started:
+                            try:
+                                self.send_otp(
+                                    referer="https://auth.openai.com/email-verification"
+                                )
+                                otp_started = True
+                            except Exception as exc:
+                                logger.warning(f"强制邮箱验证码登录发码失败: {exc}")
+                        if not otp_started:
+                            raise RuntimeError("无法从密码登录页切换到邮箱验证码登录")
+                        otp_code = mail_provider.wait_for_otp(
+                            email,
+                            timeout=otp_timeout,
+                            issued_after=otp_sent_at,
+                        )
+                        login_resp = self.verify_otp(otp_code)
+                    else:
+                        login_resp = self.login_password_verify(login_password)
                     page_type = (self._extract_page_type(login_resp) or "").lower()
                     continue_url = self._normalize_continue_url(
                         self._extract_continue_url_from_step(login_resp)

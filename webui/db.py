@@ -996,13 +996,24 @@ def list_registered(
     for r in cur.fetchall():
         d = dict(r)
         plus = None
+        credential_source = "registration"
+        credential_source_label = "自动注册"
         if d.get("extra_json"):
             try:
                 extra = json.loads(d["extra_json"])
                 plus = extra.get("plus_check")
+                credential_source = (
+                    extra.get("credential_source") or credential_source
+                )
+                credential_source_label = (
+                    extra.get("credential_source_label")
+                    or credential_source_label
+                )
             except Exception:
                 pass
         d["plus_check"] = plus
+        d["credential_source"] = credential_source
+        d["credential_source_label"] = credential_source_label
         d.pop("extra_json", None)
         rows.append(d)
     return rows

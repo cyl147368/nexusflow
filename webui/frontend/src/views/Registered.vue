@@ -49,6 +49,11 @@ function workflowLabel(scope) {
     integration: '一体化流程',
   }[scope] || '未分类'
 }
+function credentialSourceLabel(row) {
+  return row.credential_source_label || (
+    row.credential_source === 'recovery' ? '邮箱验证码找回' : '自动注册'
+  )
+}
 
 async function load(resetPage) {
   if (resetPage) page.value = 1
@@ -442,6 +447,17 @@ onActivated(() => load())
               :type="row.workflow_scope === 'integration' ? 'primary' : 'info'"
             >
               {{ workflowLabel(row.workflow_scope) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="来源" width="140">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.credential_source === 'recovery' ? 'warning' : 'success'"
+              effect="plain"
+            >
+              {{ credentialSourceLabel(row) }}
             </el-tag>
           </template>
         </el-table-column>

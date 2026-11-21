@@ -121,6 +121,16 @@ class RegisterReq(BaseModel):
     want_2fa: bool = False
 
 
+class RecoveryReq(BaseModel):
+    email: str
+    relay_url: str = ""
+    proxy: str = ""
+    otp_timeout: int = 180
+    want_2fa: bool = True
+    new_password: str = ""
+    workflow_scope: str = "legacy"
+
+
 def _workflow_scope(value: str, default: str = "") -> str:
     scope = (value or "").strip().lower()
     return scope if scope in {"legacy", "integration"} else default
@@ -409,6 +419,59 @@ def api_register(req: RegisterReq):
     run_id = registrar.start_registration(account, options)
     logger.info(f"[run] {run_id} -> {account['email']} (mail_source={mail_source})")
     return {"ok": True, "run_id": run_id, "email": account["email"]}
+
+
+@app.post("/api/recovery/start")
+def api_recovery_start(req: RecoveryReq):
+    """Recover an existing account with an email verification code."""
+    email = (req.email or "").strip().lower()
+    if "@" not in email:
+        raise HTTPException(400, "请输入有效邮箱")
+    stored = db.get_account(email)
+    manual_relay = (req.relay_url or "").strip()
+    if not stored and not manual_relay:
+        raise HTTPException(
+            400,
+            "邮箱不在号池中；请填写隐私邮箱接码地址",
+        )
+    scope = (
+        (stored or {}).get("workflow_scope")
+        or _workflow_scope(req.workflow_scope, "legacy")
+    )
+    relay_url = manual_relay or str((stored or {}).get("relay_url") or "")
+    if not relay_url:
+        raise HTTPException(
+            400,
+            "该邮箱没有接码地址，请手填隐私邮箱取件链接",
+        )
+    account = dict(stored or {})
+    account.update(
+        {
+            "email": email,
+            "kind": "icloud_relay",
+            "relay_url": relay_url,
+            "workflow_scope": scope,
+        }
+    )
+    options = {
+        "relay_url": relay_url,
+        "proxy": req.proxy,
+        "otp_timeout": max(30, int(req.otp_timeout or 180)),
+        "want_2fa": req.want_2fa,
+        "new_password": (req.new_password or "").strip(),
+        "workflow_scope": scope,
+    }
+    run_id = registrar.start_recovery(account, options)
+    logger.info(
+        f"[recovery] {run_id} -> {email} "
+        f"(scope={scope}, mailbox={'manual' if manual_relay else 'pool'})"
+    )
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "email": email,
+        "workflow_scope": scope,
+    }
 
 
 @app.get("/api/runs/{run_id}/stream")
