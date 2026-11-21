@@ -24,6 +24,11 @@ export const listUncheckedEmails = (workflowScope = '') =>
     params: { workflow_scope: workflowScope },
   })
 
+export const listRetestEmails = (workflowScope = '') =>
+  http.get('/api/registered/retest_emails', {
+    params: { workflow_scope: workflowScope },
+  })
+
 export const getRegistered = (email) =>
   http.get(`/api/registered/${encodeURIComponent(email)}`)
 

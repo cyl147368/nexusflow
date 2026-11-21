@@ -389,6 +389,39 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertNotIn("checked@example.com", body["emails"])
         self.assertNotIn("legacy-only@example.com", body["emails"])
 
+    def test_retest_emails_exclude_existing_plus_statuses(self):
+        from webui import db
+
+        for email, status in (
+            ("unchecked@example.com", None),
+            ("free@example.com", "free"),
+            ("banned@example.com", "banned"),
+            ("invalid@example.com", "token_invalid"),
+            ("eligible@example.com", "plus_eligible"),
+            ("active@example.com", "plus_active"),
+        ):
+            row = {"email": email, "workflow_scope": "integration"}
+            if status:
+                row["plus_check"] = {"status": status, "label": status}
+            db.save_registered(row)
+
+        response = self.client.get(
+            "/api/registered/retest_emails",
+            params={"workflow_scope": "integration"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        emails = set(response.json()["emails"])
+        self.assertEqual(
+            emails,
+            {
+                "unchecked@example.com",
+                "free@example.com",
+                "banned@example.com",
+                "invalid@example.com",
+            },
+        )
+
     def test_backfill_marks_persisted_integration_aliases(self):
         from webui import db
 

@@ -3,7 +3,8 @@ import { computed, onActivated, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  listRegistered, listUncheckedEmails, getRegistered, deleteRegistered,
+  listRegistered, listUncheckedEmails, listRetestEmails,
+  getRegistered, deleteRegistered,
   bulkDeleteRegistered, bulkDeleteAccounts, checkPlus,
   listExportFormats, exportRegistered, updateCredentials,
 } from '@/api/register'
@@ -89,7 +90,11 @@ async function collectEmails(mode) {
     const { emails } = await listUncheckedEmails(workflowFilter.value)
     return emails
   }
-  return rows.value.map((r) => r.email) // all（当前页）
+  if (mode === 'all') {
+    const { emails } = await listRetestEmails(workflowFilter.value)
+    return emails
+  }
+  return rows.value.map((r) => r.email)
 }
 
 async function doCheck(mode) {

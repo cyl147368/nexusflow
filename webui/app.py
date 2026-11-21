@@ -697,6 +697,26 @@ def api_registered_unchecked_emails(
     }
 
 
+@app.get("/api/registered/retest_emails")
+def api_registered_retest_emails(
+    workflow_scope: str = "",
+    limit: int = 50000,
+):
+    """Return every account that is not already Plus-capable."""
+    scope = _workflow_scope(workflow_scope)
+    emails = db.list_registered_emails(
+        filter_rt="not_plus",
+        workflow_scope=scope,
+        limit=max(1, min(int(limit), 50000)),
+    )
+    return {
+        "ok": True,
+        "emails": emails,
+        "total": len(emails),
+        "workflow_scope": scope,
+    }
+
+
 @app.get("/api/registered/{email}")
 def api_registered_one(email: str):
     row = db.get_registered(email)

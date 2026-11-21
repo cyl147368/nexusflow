@@ -964,6 +964,12 @@ def _registered_where(filt: str, workflow_scope: str = "") -> str:
         clauses.append("extra_json LIKE '%\"free\"%'")
     elif filt == "plus":
         clauses.append("(extra_json LIKE '%\"plus_eligible\"%' OR extra_json LIKE '%\"plus_active\"%')")
+    elif filt == "not_plus":
+        clauses.append(
+            "(extra_json IS NULL OR ("
+            "extra_json NOT LIKE '%\"plus_eligible\"%' AND "
+            "extra_json NOT LIKE '%\"plus_active\"%'))"
+        )
     elif filt == "banned":
         clauses.append("extra_json LIKE '%\"banned\"%'")
     elif filt == "token_invalid":
