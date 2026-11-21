@@ -450,6 +450,56 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(response.json()["status"], "preparing")
         self.assertTrue(start.call_args.args[0]["want_2fa"])
 
+    def test_icloud_recovery_prioritizes_known_accounts(self):
+        from webui import integration
+
+        aliases = [
+            {"email": "unknown@example.com"},
+            {"email": "known@example.com"},
+        ]
+        pool = {
+            "unknown@example.com": {
+                "email": "unknown@example.com",
+                "relay_url": "http://mail-hub/mail/unknown",
+            },
+            "known@example.com": {
+                "email": "known@example.com",
+                "relay_url": "http://mail-hub/mail/known",
+            },
+        }
+        with (
+            patch.object(
+                integration,
+                "list_icloud_aliases",
+                return_value={"ok": True, "aliases": aliases},
+            ),
+            patch.object(
+                integration.db,
+                "get_integration_internal_config",
+                return_value={"icloud_account_id": "account"},
+            ),
+            patch.object(
+                integration.db,
+                "get_registered",
+                side_effect=lambda email: (
+                    {"email": email} if email == "known@example.com" else {}
+                ),
+            ),
+            patch.object(
+                integration.db,
+                "get_account",
+                side_effect=lambda email: pool.get(email),
+            ),
+        ):
+            result = integration.prepare_icloud_recovery_items()
+
+        self.assertEqual(
+            [item["email"] for item in result["items"]],
+            ["known@example.com", "unknown@example.com"],
+        )
+        self.assertEqual(result["known_accounts"], 1)
+        self.assertEqual(result["unknown_aliases"], 1)
+
     def test_recovery_batch_is_persisted(self):
         from webui import db
 

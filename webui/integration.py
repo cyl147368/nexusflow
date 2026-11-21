@@ -376,11 +376,25 @@ def prepare_icloud_recovery_items() -> dict:
             except Exception as exc:
                 errors.append({"email": email, "error": str(exc)[:300]})
                 continue
-        items.append({"email": email, "relay_url": relay_url})
+        items.append({
+            "email": email,
+            "relay_url": relay_url,
+            # Accounts that already have any local registration record are the
+            # only ones likely to be recoverable. Keep unknown aliases in the
+            # scan for completeness, but process known accounts first.
+            "known_account": bool(registered),
+        })
+    items.sort(key=lambda item: (
+        not bool(item.get("known_account")),
+        str(item.get("email") or ""),
+    ))
+    known_accounts = sum(1 for item in items if item.get("known_account"))
     return {
         "ok": True,
         "aliases": len(aliases),
         "eligible": len(items),
+        "known_accounts": known_accounts,
+        "unknown_aliases": len(items) - known_accounts,
         "imported": imported,
         "already_pooled": already_pooled,
         "skipped_complete": skipped_complete,
