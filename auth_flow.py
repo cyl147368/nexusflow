@@ -3595,6 +3595,9 @@ class AuthFlow:
         if not self.warmup():
             raise RuntimeError("warmup 失败，无法建立密码重置会话")
 
+        csrf_token = self.get_csrf_token()
+        auth_url = self.get_auth_url(csrf_token, email=email)
+        self.auth_oauth_init(auth_url)
         reset_page = self.session.get(
             "https://auth.openai.com/reset-password?"
             + urlencode({"username": email}),
