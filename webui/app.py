@@ -1163,6 +1163,45 @@ class CheckPlusReq(BaseModel):
     proxy: str = Field("", description="查询代理，留空直连")
 
 
+class RefreshAccessTokensReq(BaseModel):
+    emails: list[str] = Field(..., description="要刷新 AT 的邮箱列表")
+    proxy: str = Field("", description="刷新代理，留空直连")
+
+
+@app.post("/api/registered/refresh_at")
+def api_refresh_access_tokens(req: RefreshAccessTokensReq):
+    """Refresh saved access tokens using Session Token, then OAuth RT."""
+    from concurrent.futures import ThreadPoolExecutor
+    from . import token_refresh
+
+    emails = list(dict.fromkeys(
+        str(email or "").strip().lower()
+        for email in req.emails
+        if str(email or "").strip()
+    ))
+    if not emails:
+        raise HTTPException(400, "没有可刷新的邮箱")
+
+    workers = min(8, max(1, len(emails)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        rows = list(pool.map(
+            lambda email: token_refresh.refresh_registered_access_token(
+                email,
+                req.proxy,
+            ),
+            emails,
+        ))
+    results = {str(row.get("email") or ""): row for row in rows}
+    success = sum(1 for row in rows if row.get("ok"))
+    return {
+        "ok": True,
+        "results": results,
+        "total": len(rows),
+        "success": success,
+        "failed": len(rows) - success,
+    }
+
+
 # 封号在 401/403 响应体里的措辞。OpenAI 不止一种写法，全部小写后子串匹配。
 # 新措辞加在这里即可；日志会打出未匹配的 401/403 原文方便补充。
 _DEACTIVATED_MARKERS = (

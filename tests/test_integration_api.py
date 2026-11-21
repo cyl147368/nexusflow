@@ -422,6 +422,39 @@ class IntegrationApiTest(unittest.TestCase):
             },
         )
 
+    def test_refresh_access_tokens_endpoint(self):
+        def refresh(email, proxy):
+            return {
+                "ok": email != "bad@example.com",
+                "email": email,
+                "status": "success" if email != "bad@example.com" else "failed",
+                "at_len": 10 if email != "bad@example.com" else 0,
+            }
+
+        with patch(
+            "webui.token_refresh.refresh_registered_access_token",
+            side_effect=refresh,
+        ):
+            response = self.client.post(
+                "/api/registered/refresh_at",
+                json={
+                    "emails": [
+                        "good@example.com",
+                        "bad@example.com",
+                        "good@example.com",
+                    ],
+                    "proxy": "",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["total"], 2)
+        self.assertEqual(body["success"], 1)
+        self.assertEqual(body["failed"], 1)
+        self.assertIn("good@example.com", body["results"])
+        self.assertIn("bad@example.com", body["results"])
+
     def test_backfill_marks_persisted_integration_aliases(self):
         from webui import db
 

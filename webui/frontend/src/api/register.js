@@ -53,6 +53,9 @@ export const exportRegistered = (payload) => http.post('/api/registered/export',
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus', { emails, proxy })
 
+export const refreshAccessTokens = (emails, proxy = '') =>
+  http.post('/api/registered/refresh_at', { emails, proxy })
+
 export const exportToPanel = (email, targets) =>
   http.post('/api/registered/export_to_panel', { email, targets })
 

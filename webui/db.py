@@ -946,6 +946,56 @@ def update_plus_check(email: str, plus_info: dict) -> None:
         con.commit()
 
 
+def update_registered_tokens(
+    email: str,
+    access_token: str,
+    session_token: str = "",
+    refresh_token: str = "",
+    refreshed_at: Optional[float] = None,
+    method: str = "",
+    expires=None,
+) -> bool:
+    """Update refreshed tokens without overwriting unrelated credentials."""
+    email = str(email or "").strip().lower()
+    access_token = str(access_token or "").strip()
+    if not email or not access_token:
+        return False
+    with _lock, closing(_conn()) as con:
+        row = con.execute(
+            "SELECT extra_json FROM registered WHERE email=?",
+            (email,),
+        ).fetchone()
+        if not row:
+            return False
+        try:
+            extra = json.loads(row["extra_json"] or "{}")
+            if not isinstance(extra, dict):
+                extra = {}
+        except Exception:
+            extra = {}
+        extra["at_refreshed_at"] = float(refreshed_at or time.time())
+        if method:
+            extra["at_refresh_method"] = str(method)
+        if expires not in (None, ""):
+            extra["access_token_expires"] = expires
+
+        fields = ["access_token=?", "extra_json=?"]
+        values: list = [access_token, json.dumps(extra, ensure_ascii=False)]
+        if session_token:
+            fields.append("session_token=?")
+            values.append(str(session_token).strip())
+        if refresh_token:
+            fields.append("refresh_token=?")
+            values.append(str(refresh_token).strip())
+        values.append(email)
+        rc = con.execute(
+            f"UPDATE registered SET {', '.join(fields)} WHERE email=?",
+            values,
+        )
+        con.commit()
+        return rc.rowcount > 0
+
+
 def _registered_where(filt: str, workflow_scope: str = "") -> str:
     clauses = []
     if filt == "successful":

@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listRegistered, listUncheckedEmails, listRetestEmails,
   getRegistered, deleteRegistered,
-  bulkDeleteRegistered, bulkDeleteAccounts, checkPlus,
+  bulkDeleteRegistered, bulkDeleteAccounts, checkPlus, refreshAccessTokens,
   listExportFormats, exportRegistered, updateCredentials,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
@@ -33,6 +33,7 @@ const workflowFilter = ref('legacy')
 const selected = ref([])
 const loading = ref(false)
 const checking = ref(false)
+const refreshingAT = ref(false)
 const checkResult = ref('')
 
 const PLUS_TYPE = {
@@ -141,6 +142,23 @@ async function doCheck(mode) {
     checkResult.value = ''
     ElMessage.error('检查失败: ' + e.message)
   } finally { checking.value = false }
+}
+
+async function refreshSelectedAT() {
+  const emails = selected.value.map((row) => row.email)
+  if (!emails.length) return
+  refreshingAT.value = true
+  try {
+    const response = await refreshAccessTokens(emails, proxyText(form.value))
+    ElMessage.success(
+      `AT 刷新完成：成功 ${response.success} 个，失败 ${response.failed} 个`,
+    )
+    await load()
+  } catch (error) {
+    ElMessage.error('刷新 AT 失败: ' + error.message)
+  } finally {
+    refreshingAT.value = false
+  }
 }
 
 // customClass 里的 pre-line 让消息里的 \n 真的换行。
@@ -442,6 +460,9 @@ onActivated(() => load())
         <el-button :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
           检测选中 ({{ selected.length }})
         </el-button>
+          <el-button :loading="refreshingAT" :disabled="!selected.length" @click="refreshSelectedAT">
+            刷新选中 AT ({{ selected.length }})
+          </el-button>
         <el-divider direction="vertical" />
         <el-dropdown trigger="click" @command="doExport" @visible-change="(v) => v && loadExportFormats()">
           <el-button :loading="exporting">
