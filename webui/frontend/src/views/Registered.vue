@@ -59,12 +59,24 @@ async function load(resetPage) {
   if (resetPage) page.value = 1
   loading.value = true
   try {
-    const { items, total: t } = await listRegistered({
-      limit: PAGE_SIZE,
-      offset: (page.value - 1) * PAGE_SIZE,
-      filter: filter.value,
-      workflow_scope: workflowFilter.value,
-    })
+    let response
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        response = await listRegistered({
+          limit: PAGE_SIZE,
+          offset: (page.value - 1) * PAGE_SIZE,
+          filter: filter.value,
+          workflow_scope: workflowFilter.value,
+        })
+        break
+      } catch (error) {
+        // A service restart/update can briefly produce 502 before the new
+        // worker is ready. Retry once instead of surfacing a spurious error.
+        if (attempt > 0 || error.response?.status !== 502) throw error
+        await new Promise((resolve) => setTimeout(resolve, 800))
+      }
+    }
+    const { items, total: t } = response
     rows.value = items
     total.value = t
   } catch (e) { ElMessage.error(e.message) }

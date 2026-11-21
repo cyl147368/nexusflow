@@ -977,11 +977,12 @@ def _registered_where(filt: str, workflow_scope: str = "") -> str:
 
 
 def count_registered(filter_rt: str = "all", workflow_scope: str = "") -> int:
-    con = _conn()
-    cur = con.execute(
-        f"SELECT COUNT(*) FROM registered {_registered_where(filter_rt, workflow_scope)}"
-    )
-    return cur.fetchone()[0]
+    with closing(_conn()) as con:
+        cur = con.execute(
+            f"SELECT COUNT(*) FROM registered "
+            f"{_registered_where(filter_rt, workflow_scope)}"
+        )
+        return cur.fetchone()[0]
 
 
 def list_registered(
@@ -990,17 +991,18 @@ def list_registered(
     filter_rt: str = "all",
     workflow_scope: str = "",
 ) -> list[dict]:
-    con = _conn()
     where = _registered_where(filter_rt, workflow_scope)
-    cur = con.execute(
-        f"SELECT email, workflow_scope, password, totp_secret, "
-        f"length(access_token) AS at_len, length(session_token) AS st_len, "
-        f"length(refresh_token) AS rt_len, extra_json, created_at FROM registered "
-        f"{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    )
+    with closing(_conn()) as con:
+        cur = con.execute(
+            f"SELECT email, workflow_scope, password, totp_secret, "
+            f"length(access_token) AS at_len, length(session_token) AS st_len, "
+            f"length(refresh_token) AS rt_len, extra_json, created_at FROM registered "
+            f"{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        raw_rows = cur.fetchall()
     rows = []
-    for r in cur.fetchall():
+    for r in raw_rows:
         d = dict(r)
         plus = None
         credential_source = "registration"
@@ -1038,19 +1040,20 @@ def list_registered_full(
        用 JOIN 而不是给 registered 加列的原因：不用迁移、**已经注册完的老号也能导**
        （只要号池那行还在）；号池行被删掉就是空串，照约定留空、分隔符保留。
     """
-    con = _conn()
     scope = (workflow_scope or "").strip().lower()
     where = " WHERE r.workflow_scope=?" if scope else ""
     args = (scope, limit) if scope else (limit,)
-    cur = con.execute(
-        "SELECT r.*, a.relay_url AS relay_url "
-        "FROM registered r LEFT JOIN outlook_accounts a ON a.email = r.email "
-        f"{where} "
-        "ORDER BY r.created_at DESC LIMIT ?",
-        args,
-    )
+    with closing(_conn()) as con:
+        cur = con.execute(
+            "SELECT r.*, a.relay_url AS relay_url "
+            "FROM registered r LEFT JOIN outlook_accounts a ON a.email = r.email "
+            f"{where} "
+            "ORDER BY r.created_at DESC LIMIT ?",
+            args,
+        )
+        raw_rows = cur.fetchall()
     out = []
-    for row in cur.fetchall():
+    for row in raw_rows:
         d = dict(row)
         if d.get("extra_json"):
             try:
