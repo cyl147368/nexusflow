@@ -154,6 +154,19 @@ def classify_error(err: str, mail_source: str = "") -> str:
     return "unknown"
 
 
+def _is_rate_limit_error(message: str) -> bool:
+    text = (message or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "too many requests",
+            "rate_limit_exceeded",
+            "http 429",
+            "status=429",
+        )
+    )
+
+
 def _do_register(
     run_id: str,
     account: dict,
@@ -827,6 +840,40 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                 logging.getLogger("recovery").error(
                     f"批量找回失败 email={email}: {exc}"
                 )
+            error_text = str(result.get("error") or "")
+            if not result.get("ok") and _is_rate_limit_error(error_text):
+                retry_counts = dict(job.get("retry_counts") or {})
+                retries = int(retry_counts.get(email) or 0)
+                if retries < 5:
+                    retries += 1
+                    retry_counts[email] = retries
+                    delay = min(600, 60 * (2 ** (retries - 1)))
+                    job.update(
+                        retry_counts=retry_counts,
+                        status="running",
+                        message=(
+                            f"{email} 触发限流，{delay} 秒后重试"
+                            f"（第 {retries}/5 次）"
+                        ),
+                        next_attempt_at=time.time() + delay,
+                    )
+                    _save_recovery_batch(job)
+                    _emit_status(
+                        batch_id,
+                        "phase",
+                        {
+                            "phase": "batch_rate_limit_wait",
+                            "email": email,
+                            "retry": retries,
+                            "delay_seconds": delay,
+                        },
+                    )
+                    logging.getLogger("recovery").warning(
+                        f"批量找回限流，{delay} 秒后重试 email={email}"
+                    )
+                    for _ in range(delay):
+                        time.sleep(1)
+                    continue
             results.append(result)
             next_index += 1
             job.update(
@@ -836,6 +883,7 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                 success_count=sum(1 for row in results if row.get("ok")),
                 failure_count=sum(1 for row in results if not row.get("ok")),
                 current_email="",
+                next_attempt_at=None,
             )
             _save_recovery_batch(job)
             _emit_status(
@@ -849,6 +897,9 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                     "total": len(items),
                 },
             )
+            cooldown = max(5, int(options.get("cool_down_seconds") or 10))
+            if next_index < len(items):
+                time.sleep(cooldown)
 
         failure_count = sum(1 for row in results if not row.get("ok"))
         success_count = sum(1 for row in results if row.get("ok"))

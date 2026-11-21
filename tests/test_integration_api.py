@@ -516,6 +516,17 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(persisted["failure_count"], 1)
         self.assertEqual(persisted["status"], "partial")
 
+    def test_rate_limit_errors_are_retryable(self):
+        from webui import registrar
+
+        self.assertTrue(registrar._is_rate_limit_error(
+            "authorize/continue HTTP 429 Too many requests"
+        ))
+        self.assertTrue(registrar._is_rate_limit_error(
+            '{"code":"rate_limit_exceeded"}'
+        ))
+        self.assertFalse(registrar._is_rate_limit_error("username_not_found"))
+
     def test_recovery_marks_result_source_and_resets_password(self):
         from webui import account_recovery, db
 
