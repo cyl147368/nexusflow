@@ -234,9 +234,27 @@ def recover_account(
     log: Optional[Callable[[str], None]] = None,
     phase: Optional[Callable[[str, dict], None]] = None,
 ) -> dict:
-    """Recover an existing account, preferring the native password-reset flow."""
+    """Recover an existing account, preferring email OTP login."""
     emit_log = log or (lambda _message: None)
     emit_phase = phase or (lambda _name, _payload: None)
+
+    try:
+        return _recover_account_login_first(
+            account,
+            options,
+            log=emit_log,
+            phase=emit_phase,
+        )
+    except Exception as exc:
+        first_error = str(exc)
+        if (
+            "username_not_found" in first_error.lower()
+            or _mail_wait_failure(first_error)
+        ):
+            raise
+        emit_log(
+            f"邮箱验证码登录未完成，尝试密码重置兜底: {first_error}"
+        )
 
     email = str(account.get("email") or "").strip().lower()
     if "@" not in email:

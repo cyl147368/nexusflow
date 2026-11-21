@@ -540,6 +540,17 @@ class IntegrationApiTest(unittest.TestCase):
     def test_recovery_uses_fresh_flow_after_reset_state_failure(self):
         from webui import account_recovery
 
+        class EmailLoginFailedFlow:
+            def run_protocol_login(
+                self,
+                mail,
+                email,
+                password="",
+                force_email_otp=False,
+            ):
+                self.force_email_otp = force_email_otp
+                raise RuntimeError("HTTP 409 invalid_state")
+
         class ResetFailedFlow:
             def check_proxy(self):
                 return True
@@ -578,8 +589,9 @@ class IntegrationApiTest(unittest.TestCase):
             def set_or_reset_password(self, email, password, **kwargs):
                 return {"ok": True, "mode": "add"}
 
-        first = ResetFailedFlow()
-        second = LoginFlow()
+        first = EmailLoginFailedFlow()
+        second = ResetFailedFlow()
+        third = LoginFlow()
         with (
             patch.object(
                 account_recovery,
@@ -589,7 +601,7 @@ class IntegrationApiTest(unittest.TestCase):
             patch.object(
                 account_recovery,
                 "AuthFlow",
-                side_effect=[first, second],
+                side_effect=[first, second, third],
             ) as auth_flow,
         ):
             result = account_recovery.recover_account(
@@ -602,8 +614,9 @@ class IntegrationApiTest(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(auth_flow.call_count, 2)
-        self.assertTrue(second.force_email_otp)
+        self.assertEqual(auth_flow.call_count, 3)
+        self.assertTrue(first.force_email_otp)
+        self.assertTrue(third.force_email_otp)
         self.assertEqual(result["access_token_len"], len("fresh-at"))
         self.assertEqual(result["credential_source"], "recovery")
 
@@ -676,7 +689,7 @@ class IntegrationApiTest(unittest.TestCase):
                 },
             )
 
-        self.assertFalse(fake.force_email_otp)
+        self.assertTrue(fake.force_email_otp)
         self.assertEqual(result["credential_source"], "recovery")
         self.assertEqual(result["password"], "NewPassword1!")
         saved = db.get_registered("recovered@example.com")
