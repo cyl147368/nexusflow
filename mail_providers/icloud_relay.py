@@ -86,8 +86,10 @@ from __future__ import annotations
 
 import hashlib
 import html as _html
+import ipaddress
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
@@ -107,6 +109,56 @@ from .base import (
 )
 
 logger = logging.getLogger(__name__)
+
+# urllib honours HTTP(S)_PROXY/ALL_PROXY from the container environment. Internal
+# Mail Hub addresses must never be sent through the external OpenAI proxy: doing
+# so turns `mail-hub` into a remote DNS lookup and causes connection/DNS errors
+# while the actual mail page is healthy.
+_DIRECT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _is_internal_relay_url(url: str) -> bool:
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").strip().lower()
+        port = parts.port
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host in {
+        "localhost",
+        "mail-hub",
+        "host.docker.internal",
+        "gateway.docker.internal",
+    }:
+        return True
+    if host.endswith((".internal", ".local")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_private or ip.is_link_local:
+            return True
+    except ValueError:
+        pass
+    configured = {
+        item.strip().lower()
+        for item in os.getenv("NEXUSFLOW_INTERNAL_HOSTS", "").split(",")
+        if item.strip()
+    }
+    if host in configured:
+        return True
+    # Legacy pool rows may use the host's public address for Mail Hub. The
+    # dedicated port + /mail/ path identify the internal service.
+    if port == 8090 and (parts.path or "").startswith("/mail/"):
+        return True
+    return False
+
+
+def _open_relay_url(req: urllib.request.Request, timeout: int):
+    if _is_internal_relay_url(req.full_url):
+        return _DIRECT_OPENER.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 # 只认这些发件人（中转站会把发件人改写成 noreply_at_tm_openai_com_xxx@icloud.com，
 # 所以匹配的是下划线形态，不是正常域名）
@@ -783,7 +835,7 @@ class ICloudRelayProvider(MailProvider):
             "Cache-Control": "no-cache",
         })
         try:
-            with urllib.request.urlopen(req, timeout=self.http_timeout) as r:
+            with _open_relay_url(req, self.http_timeout) as r:
                 return r.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
             # 401/403/404 → token 失效或链接写错，是配置问题，号本身没救
@@ -809,7 +861,7 @@ class ICloudRelayProvider(MailProvider):
             "Accept": "*/*",
             "Referer": self.relay_url,
         })
-        with urllib.request.urlopen(req, timeout=self.http_timeout) as r:
+        with _open_relay_url(req, self.http_timeout) as r:
             return r.read().decode("utf-8", errors="replace")
 
     def _try_api(self, api_url: str, limit: int = 50) -> str:
@@ -861,7 +913,7 @@ class ICloudRelayProvider(MailProvider):
         for url, hdr, body in attempts:
             try:
                 req = urllib.request.Request(url, data=body, headers=hdr)
-                with urllib.request.urlopen(req, timeout=self.http_timeout) as r:
+                with _open_relay_url(req, self.http_timeout) as r:
                     txt = r.read().decode("utf-8", errors="replace")
                 if txt.strip():
                     return txt

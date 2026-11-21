@@ -2,10 +2,28 @@ import time
 import unittest
 from unittest.mock import patch
 
-from mail_providers.icloud_relay import ICloudRelayProvider, parse_relay_html
+from mail_providers.icloud_relay import (
+    ICloudRelayProvider,
+    _is_internal_relay_url,
+    parse_relay_html,
+)
 
 
 class ICloudRelayWaiterTest(unittest.TestCase):
+    def test_internal_mailhub_urls_bypass_external_proxy(self):
+        self.assertTrue(
+            _is_internal_relay_url("http://mail-hub:8090/mail/example")
+        )
+        self.assertTrue(
+            _is_internal_relay_url("http://10.0.0.5:8090/mail/example")
+        )
+        self.assertTrue(
+            _is_internal_relay_url("http://189.24.104.127:8090/mail/example")
+        )
+        self.assertFalse(
+            _is_internal_relay_url("https://relay.example.com/messages/token")
+        )
+
     def test_mailhub_epoch_time_is_used_as_message_timestamp(self):
         messages = parse_relay_html(
             "<main><article><header><b>Your verification code</b>"
