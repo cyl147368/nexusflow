@@ -19,6 +19,11 @@ export const listRuns = (limit = 50) => http.get('/api/runs', { params: { limit 
 export const listRegistered = (params) =>
   http.get('/api/registered', { params }) // { limit, offset, filter }
 
+export const listUncheckedEmails = (workflowScope = '') =>
+  http.get('/api/registered/unchecked_emails', {
+    params: { workflow_scope: workflowScope },
+  })
+
 export const getRegistered = (email) =>
   http.get(`/api/registered/${encodeURIComponent(email)}`)
 

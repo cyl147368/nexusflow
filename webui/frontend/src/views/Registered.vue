@@ -3,7 +3,7 @@ import { computed, onActivated, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  listRegistered, getRegistered, deleteRegistered,
+  listRegistered, listUncheckedEmails, getRegistered, deleteRegistered,
   bulkDeleteRegistered, bulkDeleteAccounts, checkPlus,
   listExportFormats, exportRegistered, updateCredentials,
 } from '@/api/register'
@@ -83,21 +83,38 @@ async function load(resetPage) {
   finally { loading.value = false }
 }
 
-function collectEmails(mode) {
+async function collectEmails(mode) {
   if (mode === 'selected') return selected.value.map((r) => r.email)
-  if (mode === 'unchecked') return rows.value.filter((r) => !plusOf(r)).map((r) => r.email)
+  if (mode === 'unchecked') {
+    const { emails } = await listUncheckedEmails(workflowFilter.value)
+    return emails
+  }
   return rows.value.map((r) => r.email) // all（当前页）
 }
 
 async function doCheck(mode) {
-  const emails = collectEmails(mode)
-  if (!emails.length) { ElMessage.info('当前页没有可检测的号'); return }
   checking.value = true
-  checkResult.value = `检查中... (${emails.length} 个)`
+  checkResult.value = '正在准备待检测账号...'
   try {
-    const { results, note } = await checkPlus(emails, proxyText(form.value))
+    const emails = await collectEmails(mode)
+    if (!emails.length) {
+      ElMessage.info(mode === 'unchecked' ? '当前流程没有未检测账号' : '当前页没有可检测的号')
+      return
+    }
+    // Keep every request below the API's 60s timeout. The backend checks one
+    // account at a time, so sending hundreds in one request can look like a 502.
+    const batchSize = 10
+    const merged = {}
+    let note = ''
+    for (let start = 0; start < emails.length; start += batchSize) {
+      const batch = emails.slice(start, start + batchSize)
+      checkResult.value = `检查中... ${Math.min(start + batch.length, emails.length)}/${emails.length}`
+      const response = await checkPlus(batch, proxyText(form.value))
+      Object.assign(merged, response.results || {})
+      note = response.note || note
+    }
     let plus = 0, free = 0, banned = 0, failed = 0, badToken = 0
-    for (const [email, info] of Object.entries(results)) {
+    for (const [email, info] of Object.entries(merged)) {
       const row = rows.value.find((r) => r.email === email)
       if (row) row.plus_check = info
       if (info.status === 'plus_eligible' || info.status === 'plus_active') plus++

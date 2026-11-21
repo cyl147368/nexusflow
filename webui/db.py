@@ -985,6 +985,22 @@ def count_registered(filter_rt: str = "all", workflow_scope: str = "") -> int:
         return cur.fetchone()[0]
 
 
+def list_registered_emails(
+    filter_rt: str = "unchecked",
+    workflow_scope: str = "",
+    limit: int = 50000,
+) -> list[str]:
+    """Return matching email addresses without loading credential columns."""
+    where = _registered_where(filter_rt, workflow_scope)
+    with closing(_conn()) as con:
+        rows = con.execute(
+            f"SELECT email FROM registered {where} "
+            "ORDER BY created_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [str(row["email"]) for row in rows]
+
+
 def list_registered(
     limit: int = 20,
     offset: int = 0,

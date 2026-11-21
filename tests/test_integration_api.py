@@ -358,6 +358,37 @@ class IntegrationApiTest(unittest.TestCase):
             1,
         )
 
+    def test_unchecked_emails_are_returned_across_pages(self):
+        from webui import db
+
+        for index in range(25):
+            db.save_registered({
+                "email": f"unchecked-{index}@example.com",
+                "workflow_scope": "integration",
+            })
+        db.save_registered({
+            "email": "checked@example.com",
+            "workflow_scope": "integration",
+            "plus_check": {"status": "free", "label": "Free"},
+        })
+        db.save_registered({
+            "email": "legacy-only@example.com",
+            "workflow_scope": "legacy",
+        })
+
+        response = self.client.get(
+            "/api/registered/unchecked_emails",
+            params={"workflow_scope": "integration"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["total"], 25)
+        self.assertEqual(len(body["emails"]), 25)
+        self.assertIn("unchecked-24@example.com", body["emails"])
+        self.assertNotIn("checked@example.com", body["emails"])
+        self.assertNotIn("legacy-only@example.com", body["emails"])
+
     def test_backfill_marks_persisted_integration_aliases(self):
         from webui import db
 
