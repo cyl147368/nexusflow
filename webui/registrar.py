@@ -774,6 +774,11 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
     items = list(job.get("items") or [])
     results = list(job.get("results") or [])
     options = dict(job.get("options") or {})
+    rotate_proxy = bool(options.get("rotate_proxy"))
+    proxy_pool = [
+        proxy for proxy in db.list_proxy_pool()
+        if proxy and "189.24.104.127:1080" not in proxy
+    ] if rotate_proxy else []
     _current_run.run_id = batch_id
     handler = QueueLogHandler(batch_id, log_file)
     handler.setLevel(logging.INFO)
@@ -823,6 +828,15 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
             item_options = dict(options)
             item_options["relay_url"] = account["relay_url"]
             item_options["workflow_scope"] = account["workflow_scope"]
+            retry_counts = dict(job.get("retry_counts") or {})
+            retry_index = int(retry_counts.get(email) or 0)
+            if proxy_pool:
+                item_options["proxy"] = proxy_pool[
+                    (next_index + retry_index) % len(proxy_pool)
+                ]
+                job["current_proxy"] = item_options["proxy"]
+            else:
+                item_options["proxy"] = str(options.get("proxy") or "")
             try:
                 result = recover_account(account, item_options)
                 result["ok"] = True
@@ -842,7 +856,6 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                 )
             error_text = str(result.get("error") or "")
             if not result.get("ok") and _is_rate_limit_error(error_text):
-                retry_counts = dict(job.get("retry_counts") or {})
                 retries = int(retry_counts.get(email) or 0)
                 if retries < 5:
                     retries += 1

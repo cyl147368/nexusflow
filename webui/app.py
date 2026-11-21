@@ -145,6 +145,7 @@ class RecoveryBatchReq(BaseModel):
     new_password: str = ""
     workflow_scope: str = "legacy"
     cool_down_seconds: int = 10
+    rotate_proxy: bool = False
 
 
 class ICloudRecoveryScanReq(BaseModel):
@@ -153,6 +154,7 @@ class ICloudRecoveryScanReq(BaseModel):
     want_2fa: bool = True
     new_password: str = ""
     cool_down_seconds: int = 10
+    rotate_proxy: bool = True
 
 
 def _workflow_scope(value: str, default: str = "") -> str:
@@ -533,6 +535,7 @@ def api_recovery_batch_start(req: RecoveryBatchReq):
         "new_password": (req.new_password or "").strip(),
         "workflow_scope": _workflow_scope(req.workflow_scope, "legacy"),
         "cool_down_seconds": max(5, int(req.cool_down_seconds or 10)),
+        "rotate_proxy": req.rotate_proxy,
     }
     try:
         batch_id = registrar.start_recovery_batch(items, options)
@@ -571,6 +574,7 @@ def api_recovery_scan_icloud(req: ICloudRecoveryScanReq):
         "new_password": (req.new_password or "").strip(),
         "workflow_scope": "integration",
         "cool_down_seconds": max(5, int(req.cool_down_seconds or 10)),
+        "rotate_proxy": req.rotate_proxy,
     }
     try:
         job = integration.start_icloud_recovery_scan(options)

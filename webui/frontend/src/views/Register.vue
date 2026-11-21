@@ -141,6 +141,7 @@ async function scanAndRecoverICloud() {
       otp_timeout: parseInt(form.value.otpTimeout, 10) || 180,
       want_2fa: recoveryWant2fa.value,
       new_password: recoveryPassword.value.trim(),
+      rotate_proxy: true,
     })
     recoverySource.value = 'pool'
     mode.value = 'recovery'
