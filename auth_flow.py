@@ -2312,25 +2312,62 @@ class AuthFlow:
         logger.info("OTP 已发送到邮箱")
 
     def send_passwordless_otp(self, referer: str = "https://auth.openai.com/create-account/password") -> bool:
-        """
-        走 passwordless 发码（create-account/password 页面可触发该路径）。
-        """
+        """Send a passwordless OTP using the browser verification request shape."""
         headers = self._common_headers(referer)
-        headers["Content-Type"] = "application/json"
-        if self._last_sentinel_token:
-            headers["openai-sentinel-token"] = self._last_sentinel_token
-        if getattr(self, "_last_sentinel_so_token", ""):
-            headers["openai-sentinel-so-token"] = self._last_sentinel_so_token
-        resp = self.session.post(
-            "https://auth.openai.com/api/accounts/passwordless/send-otp",
-            headers=headers,
-            timeout=30,
+        headers.update(
+            {
+                "Accept": "*/*",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            }
         )
-        self._trace_http("send_passwordless_otp", resp)
-        if resp.status_code == 200:
-            logger.info("passwordless OTP 已发送")
-            return True
-        logger.warning(f"passwordless 发码失败: {resp.status_code} - {(resp.text or '')[:220]}")
+        sentinel_token = self._last_sentinel_token
+        so_token = getattr(self, "_last_sentinel_so_token", "")
+        try:
+            from sentinel import get_sentinel_token
+
+            sentinel_token, so_token = get_sentinel_token(
+                self.session,
+                device_id=self.result.device_id,
+                flow="authorize_continue",
+                **self._sentinel_fp_kwargs(),
+            )
+            self._last_sentinel_token = sentinel_token or ""
+            self._last_sentinel_so_token = so_token or ""
+        except Exception as exc:
+            logger.warning(f"passwordless 发码刷新 Sentinel 失败，使用当前 token: {exc}")
+        if sentinel_token:
+            headers["openai-sentinel-token"] = sentinel_token
+        if so_token:
+            headers["openai-sentinel-so-token"] = so_token
+
+        found_transport_error = False
+        for endpoint in (
+            "https://auth.openai.com/api/accounts/passwordless/send-otp",
+            "https://auth.openai.com/api/accounts/email-otp/send",
+        ):
+            request_headers = dict(headers)
+            request_headers["x-access-flow-invocation-id"] = str(uuid.uuid4())
+            request_headers["x-openai-document-navigation-id"] = str(uuid.uuid4())
+            for key in list(request_headers):
+                if key.lower() == "content-type":
+                    request_headers[key] = None
+            resp = self.session.post(endpoint, headers=request_headers, timeout=30)
+            self._trace_http("send_passwordless_otp", resp)
+            if resp.status_code in (200, 409):
+                # 409 means the server already considers an OTP challenge
+                # pending. Browser flows continue to poll the mailbox instead
+                # of creating another challenge with a different state.
+                logger.info("passwordless OTP 已发送或已在等待中")
+                return True
+            if resp.status_code not in (400, 404, 405):
+                found_transport_error = True
+            logger.warning(
+                f"passwordless 发码失败: {resp.status_code} - {(resp.text or '')[:220]}"
+            )
+        if found_transport_error:
+            return False
         return False
 
     def resend_otp(self, referer: str = "https://auth.openai.com/email-verification") -> bool:
@@ -2499,14 +2536,14 @@ class AuthFlow:
         candidate = self._normalize_continue_url(continue_url or "")
         if "/log-in/password" in candidate:
             referer = candidate
+        if self.send_passwordless_otp(referer):
+            return True
+
         try:
             self.send_otp(referer=referer)
             return True
         except Exception as exc:
-            logger.warning(f"密码页发送邮箱验证码失败: {exc}")
-
-        if self.send_passwordless_otp(referer):
-            return True
+            logger.warning(f"密码页 GET 发送邮箱验证码失败: {exc}")
         return self.resend_otp("https://auth.openai.com/email-verification")
 
     # ── Step 7.5: 提交 TOTP 2FA 验证码 ──

@@ -326,6 +326,10 @@ def recover_account(
         )
     except Exception as exc:
         reset_error = f"密码重置失败: {exc}"
+        if "username_not_found" in str(exc).lower():
+            raise RecoveryError(
+                f"该邮箱没有可找回的 OpenAI 账号: {reset_error}"
+            ) from exc
         if _mail_wait_failure(str(exc)):
             emit_log(reset_error)
             raise RecoveryError(reset_error) from exc

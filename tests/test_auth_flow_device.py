@@ -112,14 +112,14 @@ class AuthFlowDeviceTest(unittest.TestCase):
 
     def test_login_password_page_uses_password_referer_for_otp(self):
         flow = AuthFlow(Config())
-        with patch.object(flow, "send_otp") as send_otp:
+        with patch.object(flow, "send_passwordless_otp", return_value=True) as send_passwordless:
             sent = flow.start_login_password_otp(
                 "https://auth.openai.com/log-in/password?state=test"
             )
 
         self.assertTrue(sent)
-        send_otp.assert_called_once_with(
-            referer="https://auth.openai.com/log-in/password?state=test"
+        send_passwordless.assert_called_once_with(
+            "https://auth.openai.com/log-in/password?state=test"
         )
 
 
