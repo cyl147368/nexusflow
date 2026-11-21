@@ -19,6 +19,21 @@ class RecoveryError(RuntimeError):
         self.payload = payload or {}
 
 
+def _mail_wait_failure(message: str) -> bool:
+    text = (message or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "otp 超时",
+            "otp timeout",
+            "timed out",
+            "timeout",
+            "拉取邮件",
+            "mailbox_transport",
+        )
+    )
+
+
 def _result_payload(d: dict) -> dict:
     return {
         "email": d.get("email") or "",
@@ -306,8 +321,12 @@ def recover_account(
             else "已为无密码账号设置密码"
         )
     except Exception as exc:
-        errors.append(f"密码重置失败: {exc}")
-        emit_log(f"密码重置失败，尝试邮箱验证码登录后补设密码: {exc}")
+        reset_error = f"密码重置失败: {exc}"
+        if _mail_wait_failure(str(exc)):
+            emit_log(reset_error)
+            raise RecoveryError(reset_error) from exc
+        errors.append(reset_error)
+        emit_log(f"{reset_error}，尝试邮箱验证码登录后补设密码")
 
     if password_ok:
         emit_phase("email_login", {"email": email})

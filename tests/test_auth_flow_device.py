@@ -49,6 +49,63 @@ class AuthFlowDeviceTest(unittest.TestCase):
         self.assertEqual(flow.result.device_id, "cookie-device-id")
         self.assertIn("ext-oai-did=cookie-device-id", flow.session.signin_url)
 
+    def test_password_reset_uses_native_email_otp_endpoints(self):
+        class ResetSession:
+            def __init__(self):
+                self.get_urls = []
+                self.post_urls = []
+
+            def get(self, url, **kwargs):
+                self.get_urls.append(url)
+                return _Response()
+
+            def post(self, url, **kwargs):
+                self.post_urls.append((url, kwargs))
+                return _Response()
+
+        mail = type("Mail", (), {"wait_for_otp": lambda self, *a, **k: "123456"})()
+        flow = AuthFlow(Config())
+        flow.session = ResetSession()
+        flow.result.device_id = "device-id"
+        with (
+            patch.object(flow, "warmup", return_value=True),
+            patch.object(flow, "get_csrf_token", return_value="csrf"),
+            patch.object(
+                flow,
+                "get_auth_url",
+                return_value="https://auth.openai.com/oauth/authorize?state=test",
+            ),
+            patch.object(flow, "auth_oauth_init", return_value="device-id"),
+            patch.object(
+                flow,
+                "verify_otp",
+                return_value={
+                    "continue_url": "https://auth.openai.com/reset-password/new-password",
+                    "page": {"type": "reset_password_new_password"},
+                },
+            ),
+            patch.object(flow, "_trace_http"),
+            patch.object(flow, "_common_headers", return_value={}),
+            patch.object(flow, "_sentinel_fp_kwargs", return_value={}),
+            patch("sentinel.get_sentinel_token", return_value=("token", "so")),
+        ):
+            result = flow.reset_password_with_email_otp(
+                mail,
+                "recover@example.com",
+                "A-strong-password-123",
+                timeout=30,
+            )
+
+        self.assertEqual(result["mode"], "reset")
+        self.assertIn(
+            "https://auth.openai.com/api/accounts/password/send-otp",
+            [url for url, _ in flow.session.post_urls],
+        )
+        self.assertIn(
+            "https://auth.openai.com/api/accounts/password/reset",
+            [url for url, _ in flow.session.post_urls],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
