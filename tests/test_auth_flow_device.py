@@ -76,6 +76,8 @@ class AuthFlowDeviceTest(unittest.TestCase):
                 return_value="https://auth.openai.com/oauth/authorize?state=test",
             ),
             patch.object(flow, "auth_oauth_init", return_value="device-id"),
+            patch.object(flow, "get_sentinel_token", return_value="login-token"),
+            patch.object(flow, "authorize_continue", return_value={}),
             patch.object(
                 flow,
                 "verify_otp",
