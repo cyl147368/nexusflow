@@ -482,7 +482,9 @@ class IntegrationApiTest(unittest.TestCase):
                 integration.db,
                 "get_registered",
                 side_effect=lambda email: (
-                    {"email": email} if email == "known@example.com" else {}
+                    {"email": email, "password": "saved-password"}
+                    if email == "known@example.com"
+                    else {}
                 ),
             ),
             patch.object(
@@ -499,6 +501,56 @@ class IntegrationApiTest(unittest.TestCase):
         )
         self.assertEqual(result["known_accounts"], 1)
         self.assertEqual(result["unknown_aliases"], 1)
+
+    def test_icloud_recovery_keeps_partial_accounts_until_all_tokens_exist(self):
+        from webui import integration
+
+        with (
+            patch.object(
+                integration,
+                "list_icloud_aliases",
+                return_value={
+                    "ok": True,
+                    "aliases": [
+                        {"email": "partial@example.com"},
+                        {"email": "complete@example.com"},
+                    ],
+                },
+            ),
+            patch.object(
+                integration.db,
+                "get_integration_internal_config",
+                return_value={"icloud_account_id": "account"},
+            ),
+            patch.object(
+                integration.db,
+                "get_registered",
+                side_effect=lambda email: (
+                    {
+                        "access_token": "at",
+                        "session_token": "st",
+                        "refresh_token": "rt",
+                    }
+                    if email == "complete@example.com"
+                    else {"access_token": "partial-at"}
+                ),
+            ),
+            patch.object(
+                integration.db,
+                "get_account",
+                side_effect=lambda email: {
+                    "email": email,
+                    "relay_url": f"http://mail-hub/mail/{email}",
+                },
+            ),
+        ):
+            result = integration.prepare_icloud_recovery_items()
+
+        self.assertEqual(
+            [item["email"] for item in result["items"]],
+            ["partial@example.com"],
+        )
+        self.assertEqual(result["skipped_complete"], 1)
 
     def test_recovery_batch_is_persisted(self):
         from webui import db

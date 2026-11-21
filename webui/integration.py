@@ -322,12 +322,22 @@ def prepare_icloud_recovery_items() -> dict:
         if "@" not in email:
             continue
         registered = db.get_registered(email) or {}
-        if any(
+        if all(
             str(registered.get(key) or "").strip()
             for key in ("access_token", "session_token", "refresh_token")
         ):
             skipped_complete += 1
             continue
+        known_account = any(
+            str(registered.get(key) or "").strip()
+            for key in (
+                "password",
+                "access_token",
+                "session_token",
+                "refresh_token",
+                "totp_secret",
+            )
+        )
         pool_row = db.get_account(email)
         relay_url = str((pool_row or {}).get("relay_url") or "").strip()
         if relay_url:
@@ -382,7 +392,7 @@ def prepare_icloud_recovery_items() -> dict:
             # Accounts that already have any local registration record are the
             # only ones likely to be recoverable. Keep unknown aliases in the
             # scan for completeness, but process known accounts first.
-            "known_account": bool(registered),
+            "known_account": known_account,
         })
     items.sort(key=lambda item: (
         not bool(item.get("known_account")),
