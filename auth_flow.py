@@ -3889,7 +3889,7 @@ class AuthFlow:
         mode = ""
         prefer_login_screen_first = str(
             os.getenv("LOCALAUTH_EXISTING_LOGIN_USE_LOGIN_HINT", "1")
-        ).lower() in ("1", "true", "yes", "on")
+        ).lower() in ("1", "true", "yes", "on") and not force_email_otp
 
         if prefer_login_screen_first:
             try:
@@ -3989,6 +3989,10 @@ class AuthFlow:
         if not continue_url and page_type not in ("login_password", "email_otp_verification"):
             is_new = self.signup(email, sentinel)
             if is_new:
+                if force_email_otp:
+                    raise RuntimeError(
+                        "邮箱未识别为已有 OpenAI 账号，找回流程不会创建新号"
+                    )
                 logger.warning("目标邮箱未命中已有账号分支，回退到注册链路")
                 self.register_password(email)
                 otp_sent_at = time.time()

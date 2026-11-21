@@ -164,24 +164,38 @@ class AuthFlowDeviceTest(unittest.TestCase):
             patch.object(flow, "get_auth_url", return_value="https://auth.test"),
             patch.object(flow, "auth_oauth_init", return_value="device"),
             patch.object(flow, "get_sentinel_token", return_value="token"),
-            patch.object(
-                flow,
-                "authorize_continue",
-                return_value={
-                    "page": {"type": "login_password"},
-                    "continue_url": "https://auth.openai.com/log-in/password",
-                },
-            ),
-            patch.object(flow, "start_login_password_otp", return_value=True),
+            patch.object(flow, "signup", return_value=False),
+            patch.object(flow, "kickoff_otp_delivery", return_value=True),
         ):
-            with self.assertRaises(RuntimeError) as raised:
+            with self.assertRaises(StopAfterMailWait):
                 flow.run_protocol_login(
                     Mail(),
                     "alias@example.com",
                     password="",
                     force_email_otp=True,
                 )
-        self.assertIsInstance(raised.exception.__cause__, StopAfterMailWait)
+
+    def test_forced_login_otp_does_not_create_missing_account(self):
+        flow = AuthFlow(Config(), env_overrides={"OTP_TIMEOUT": "30"})
+        with (
+            patch.object(flow, "check_proxy", return_value=True),
+            patch.object(flow, "warmup", return_value=True),
+            patch.object(flow, "get_csrf_token", return_value="csrf"),
+            patch.object(flow, "get_auth_url", return_value="https://auth.test"),
+            patch.object(flow, "auth_oauth_init", return_value="device"),
+            patch.object(flow, "get_sentinel_token", return_value="token"),
+            patch.object(flow, "signup", return_value=True),
+            patch.object(flow, "register_password") as register_password,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "不会创建新号"):
+                flow.run_protocol_login(
+                    object(),
+                    "missing@example.com",
+                    password="",
+                    force_email_otp=True,
+                )
+
+        register_password.assert_not_called()
 
 
 if __name__ == "__main__":
