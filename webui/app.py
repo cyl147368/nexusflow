@@ -142,7 +142,7 @@ class RecoveryBatchReq(BaseModel):
     proxy: str = ""
     otp_timeout: int = 180
     want_2fa: bool = True
-    new_password: str = ""
+    new_password: str = "qweasd123"
     workflow_scope: str = "legacy"
     cool_down_seconds: int = 10
     rotate_proxy: bool = False
@@ -152,7 +152,7 @@ class ICloudRecoveryScanReq(BaseModel):
     proxy: str = ""
     otp_timeout: int = 180
     want_2fa: bool = True
-    new_password: str = ""
+    new_password: str = "qweasd123"
     cool_down_seconds: int = 10
     rotate_proxy: bool = True
 

@@ -26,7 +26,7 @@ const regEmail = ref('')
 const recoveryEmails = ref([])
 const recoverySource = ref('pool')
 const recoveryRelay = ref('')
-const recoveryPassword = ref('')
+const recoveryPassword = ref('qweasd123')
 const recoveryWant2fa = ref(true)
 const recoveryScope = ref('legacy')
 const recoveryAccounts = ref([])
@@ -371,16 +371,16 @@ async function runRecovery() {
             <el-form-item label="OTP 等待秒数">
               <el-input-number v-model="form.otpTimeout" :min="30" :max="600" />
             </el-form-item>
-            <el-form-item label="新密码（留空自动生成）">
+            <el-form-item label="新密码">
               <el-input
                 v-model="recoveryPassword"
                 type="password"
                 show-password
                 clearable
-                placeholder="留空则生成 16 位强密码"
+                placeholder="统一使用 qweasd123"
               />
               <div class="hint" style="margin-top: 6px">
-                批量找回建议留空，每个账号会生成独立密码。
+                找回账号默认统一设置为 qweasd123；留空时后端会生成随机密码。
               </div>
             </el-form-item>
             <el-form-item label="找回结果归属">

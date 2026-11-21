@@ -3590,8 +3590,13 @@ class AuthFlow:
         """Reset an existing account through OpenAI's email reset flow."""
         email = (email or "").strip().lower()
         new_password = (new_password or "").strip()
-        if not email or len(new_password) < 12:
-            raise RuntimeError("密码重置需要邮箱和至少 12 位的新密码")
+        if not email or len(new_password) < 8:
+            raise RuntimeError("密码重置需要邮箱和至少 8 位的新密码")
+        # 先按真实代理出口校准时区/语言，再建立 OAuth 状态。否则代理出口在
+        # 东南亚、指纹仍是 UTC/en-US 时，warmup 与 authorize/continue 容易
+        # 被判成不一致的会话并直接返回 409 invalid_state。
+        if not self.check_proxy():
+            logger.warning("网络预检查未通过，继续尝试密码重置链路以获取精确错误...")
         if not self.warmup():
             raise RuntimeError("warmup 失败，无法建立密码重置会话")
 

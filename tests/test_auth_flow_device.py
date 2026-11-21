@@ -68,6 +68,7 @@ class AuthFlowDeviceTest(unittest.TestCase):
         flow.session = ResetSession()
         flow.result.device_id = "device-id"
         with (
+            patch.object(flow, "check_proxy", return_value=True) as check_proxy,
             patch.object(flow, "warmup", return_value=True),
             patch.object(flow, "get_csrf_token", return_value="csrf"),
             patch.object(
@@ -94,10 +95,11 @@ class AuthFlowDeviceTest(unittest.TestCase):
             result = flow.reset_password_with_email_otp(
                 mail,
                 "recover@example.com",
-                "A-strong-password-123",
+                "qweasd123",
                 timeout=30,
             )
 
+        check_proxy.assert_called_once_with()
         self.assertEqual(result["mode"], "reset")
         self.assertIn(
             "https://auth.openai.com/api/accounts/password/send-otp",

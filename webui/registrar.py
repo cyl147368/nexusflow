@@ -167,6 +167,15 @@ def _is_rate_limit_error(message: str) -> bool:
     )
 
 
+def _recovery_retry_kind(message: str) -> str:
+    """Return the retry strategy for transient recovery failures."""
+    if _is_rate_limit_error(message):
+        return "rate_limit"
+    if classify_error(message) == "network":
+        return "network"
+    return ""
+
+
 def _do_register(
     run_id: str,
     account: dict,
@@ -855,17 +864,21 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                     f"批量找回失败 email={email}: {exc}"
                 )
             error_text = str(result.get("error") or "")
-            if not result.get("ok") and _is_rate_limit_error(error_text):
+            retry_kind = _recovery_retry_kind(error_text)
+            if not result.get("ok") and retry_kind:
                 retries = int(retry_counts.get(email) or 0)
                 if retries < 5:
                     retries += 1
                     retry_counts[email] = retries
-                    delay = min(600, 60 * (2 ** (retries - 1)))
+                    base_delay = 60 if retry_kind == "rate_limit" else 15
+                    cap = 600 if retry_kind == "rate_limit" else 180
+                    delay = min(cap, base_delay * (2 ** (retries - 1)))
+                    retry_label = "限流" if retry_kind == "rate_limit" else "网络/会话"
                     job.update(
                         retry_counts=retry_counts,
                         status="running",
                         message=(
-                            f"{email} 触发限流，{delay} 秒后重试"
+                            f"{email} 触发{retry_label}错误，{delay} 秒后换代理重试"
                             f"（第 {retries}/5 次）"
                         ),
                         next_attempt_at=time.time() + delay,
@@ -875,14 +888,20 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                         batch_id,
                         "phase",
                         {
-                            "phase": "batch_rate_limit_wait",
+                            "phase": (
+                                "batch_rate_limit_wait"
+                                if retry_kind == "rate_limit"
+                                else "batch_network_retry_wait"
+                            ),
                             "email": email,
                             "retry": retries,
                             "delay_seconds": delay,
+                            "retry_kind": retry_kind,
                         },
                     )
                     logging.getLogger("recovery").warning(
-                        f"批量找回限流，{delay} 秒后重试 email={email}"
+                        f"批量找回{retry_label}错误，{delay} 秒后换代理重试 "
+                        f"email={email}"
                     )
                     for _ in range(delay):
                         time.sleep(1)

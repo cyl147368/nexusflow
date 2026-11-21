@@ -526,6 +526,86 @@ class IntegrationApiTest(unittest.TestCase):
             '{"code":"rate_limit_exceeded"}'
         ))
         self.assertFalse(registrar._is_rate_limit_error("username_not_found"))
+        self.assertEqual(
+            registrar._recovery_retry_kind(
+                "authorize/continue failed: HTTP 409 invalid_state"
+            ),
+            "network",
+        )
+        self.assertEqual(
+            registrar._recovery_retry_kind("username_not_found"),
+            "",
+        )
+
+    def test_recovery_uses_fresh_flow_after_reset_state_failure(self):
+        from webui import account_recovery
+
+        class ResetFailedFlow:
+            def check_proxy(self):
+                return True
+
+            def reset_password_with_email_otp(
+                self,
+                mail,
+                email,
+                new_password,
+                timeout=180,
+            ):
+                raise RuntimeError("HTTP 409 invalid_state")
+
+        class LoginFlow:
+            def run_protocol_login(
+                self,
+                mail,
+                email,
+                password="",
+                force_email_otp=False,
+            ):
+                self.force_email_otp = force_email_otp
+
+                class Result:
+                    @staticmethod
+                    def to_dict():
+                        return {
+                            "email": email,
+                            "access_token": "fresh-at",
+                            "session_token": "fresh-st",
+                            "refresh_token": "fresh-rt",
+                        }
+
+                return Result()
+
+            def set_or_reset_password(self, email, password, **kwargs):
+                return {"ok": True, "mode": "add"}
+
+        first = ResetFailedFlow()
+        second = LoginFlow()
+        with (
+            patch.object(
+                account_recovery,
+                "create_mail_provider",
+                return_value=object(),
+            ),
+            patch.object(
+                account_recovery,
+                "AuthFlow",
+                side_effect=[first, second],
+            ) as auth_flow,
+        ):
+            result = account_recovery.recover_account(
+                {"email": "fresh-flow@example.com"},
+                {
+                    "relay_url": "https://mail.example/fresh-flow",
+                    "new_password": "FreshPassword1!",
+                    "want_2fa": False,
+                    "workflow_scope": "integration",
+                },
+            )
+
+        self.assertEqual(auth_flow.call_count, 2)
+        self.assertTrue(second.force_email_otp)
+        self.assertEqual(result["access_token_len"], len("fresh-at"))
+        self.assertEqual(result["credential_source"], "recovery")
 
     def test_recovery_marks_result_source_and_resets_password(self):
         from webui import account_recovery, db

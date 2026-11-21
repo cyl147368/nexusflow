@@ -281,19 +281,23 @@ def recover_account(
     cfg.proxy = str(options.get("proxy") or "").strip() or None
     otp_timeout = max(30, int(options.get("otp_timeout") or 180))
     previous = db.get_registered(email) or {}
-    flow = AuthFlow(
-        cfg,
-        env_overrides={
-            "WEBUI_ALLOW_LOGIN": "1",
-            "OTP_TIMEOUT": str(otp_timeout),
-            "SKIP_OAUTH_TOKEN_EXCHANGE": "0",
-            "OAUTH_CODEX_RT_EXCHANGE": "1",
-        },
-        account_callback=lambda _email: {
-            "password": previous.get("password") or "",
-            "totp_secret": previous.get("totp_secret") or "",
-        },
-    )
+
+    def new_flow() -> AuthFlow:
+        return AuthFlow(
+            cfg,
+            env_overrides={
+                "WEBUI_ALLOW_LOGIN": "1",
+                "OTP_TIMEOUT": str(otp_timeout),
+                "SKIP_OAUTH_TOKEN_EXCHANGE": "0",
+                "OAUTH_CODEX_RT_EXCHANGE": "1",
+            },
+            account_callback=lambda _email: {
+                "password": previous.get("password") or "",
+                "totp_secret": previous.get("totp_secret") or "",
+            },
+        )
+
+    flow = new_flow()
 
     new_password = str(options.get("new_password") or "").strip()
     if not new_password:
@@ -339,9 +343,23 @@ def recover_account(
                 force_email_otp=False,
             )
         except Exception as exc:
-            errors.append(f"密码已重置，但登录获取凭证失败: {exc}")
-            emit_log(f"密码已重置，但登录失败: {exc}")
+            first_error = f"密码已重置，但登录获取凭证失败: {exc}"
+            emit_log(f"{first_error}，切换新会话重试")
+            flow = new_flow()
+            try:
+                result = flow.run_protocol_login(
+                    mail,
+                    email,
+                    password=new_password,
+                    force_email_otp=False,
+                )
+            except Exception as retry_exc:
+                errors.append(f"{first_error}；新会话重试仍失败: {retry_exc}")
+                emit_log(f"新会话登录仍失败: {retry_exc}")
     else:
+        # 密码重置失败时，原 AuthFlow 的 OAuth state 往往已经失效。继续在同一
+        # session 上探测只会重复 409 invalid_state，必须从 warmup 开始新建会话。
+        flow = new_flow()
         emit_phase("email_login", {"email": email})
         emit_log("尝试用邮箱验证码登录无密码/旧密码账号")
         try:
