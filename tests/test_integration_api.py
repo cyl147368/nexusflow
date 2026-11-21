@@ -436,6 +436,20 @@ class IntegrationApiTest(unittest.TestCase):
             ],
         )
 
+    def test_recovery_scan_icloud_starts_background_preparation(self):
+        with patch(
+            "webui.integration.start_icloud_recovery_scan",
+            return_value={"id": "scan-batch", "status": "preparing"},
+        ) as start:
+            response = self.client.post(
+                "/api/recovery/scan_icloud",
+                json={"want_2fa": True, "otp_timeout": 180},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["batch_id"], "scan-batch")
+        self.assertEqual(response.json()["status"], "preparing")
+        self.assertTrue(start.call_args.args[0]["want_2fa"])
+
     def test_recovery_batch_is_persisted(self):
         from webui import db
 

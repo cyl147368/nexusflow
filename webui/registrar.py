@@ -914,8 +914,13 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                     _recovery_active.pop(email, None)
 
 
-def start_recovery_batch(items: list[dict], options: dict) -> str:
-    batch_id = uuid.uuid4().hex[:12]
+def start_recovery_batch(
+    items: list[dict],
+    options: dict,
+    *,
+    batch_id: str = "",
+) -> str:
+    batch_id = (batch_id or uuid.uuid4().hex[:12]).strip()
     log_file = LOG_DIR / f"{batch_id}.log"
     emails = [
         str(item.get("email") or "").strip().lower()

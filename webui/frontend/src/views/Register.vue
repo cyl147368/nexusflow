@@ -5,7 +5,7 @@ import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 import {
   startRegister, startRecoveryBatch, getRegistered, getLatestRecoveryBatch,
-  getRecoveryBatch,
+  getRecoveryBatch, scanICloudRecovery,
 } from '@/api/register'
 import { listAccounts } from '@/api/accounts'
 import { copyText } from '@/api/request'
@@ -68,7 +68,7 @@ async function loadLatestRecoveryBatch() {
     if (!job?.id) return
     activeRecoveryBatchId.value = job.id
     recoveryBatchJob.value = job
-    if (job.status === 'running') {
+    if (['preparing', 'running'].includes(job.status)) {
       mode.value = 'recovery'
       startBatchPolling(job.id)
     } else if (
@@ -102,7 +102,7 @@ async function pollRecoveryBatch(batchId) {
     const { job } = await getRecoveryBatch(batchId)
     if (!job) return
     recoveryBatchJob.value = job
-    if (!['running', 'paused'].includes(job.status)) {
+    if (!['preparing', 'running', 'paused'].includes(job.status)) {
       stopBatchPolling()
       applyBatchResult(job)
       runtime.bumpData()
@@ -130,6 +130,38 @@ const recoveryBatchPercent = computed(() => {
     Number(recoveryBatchJob.value?.completed_count || 0) / total * 100,
   ))
 })
+
+async function scanAndRecoverICloud() {
+  recoveryBusy.value = true
+  runtime.clearLogs()
+  lastRunResult.value = null
+  try {
+    const result = await scanICloudRecovery({
+      proxy: proxyText(form.value),
+      otp_timeout: parseInt(form.value.otpTimeout, 10) || 180,
+      want_2fa: recoveryWant2fa.value,
+      new_password: recoveryPassword.value.trim(),
+    })
+    recoverySource.value = 'pool'
+    mode.value = 'recovery'
+    activeRecoveryBatchId.value = result.batch_id
+    recoveryBatchJob.value = {
+      id: result.batch_id,
+      status: 'preparing',
+      items: [],
+      completed_count: 0,
+      success_count: 0,
+      failure_count: 0,
+      message: '正在扫描 iCloud 隐藏邮箱',
+    }
+    startBatchPolling(result.batch_id)
+    runtime.addLog(`[client] 已启动 iCloud 隐藏邮箱扫描 ${result.batch_id}`, 'evt')
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    recoveryBusy.value = false
+  }
+}
 
 async function run() {
   starting.value = true
@@ -279,6 +311,20 @@ async function runRecovery() {
               type="info" :closable="false" show-icon style="margin-bottom: 14px"
               title="不会新建账号：通过邮箱验证码登录已有账号，自动设置新密码，并在缺少 2FA 时补齐 TOTP。"
             />
+            <el-button
+              type="primary"
+              plain
+              :loading="recoveryBusy"
+              :disabled="['preparing', 'running'].includes(recoveryBatchJob?.status)"
+              style="margin-bottom: 16px"
+              @click="scanAndRecoverICloud"
+            >
+              <el-icon><Search /></el-icon>
+              扫描 iCloud 原有邮箱并找回
+            </el-button>
+            <div class="hint" style="margin: -8px 0 16px">
+              自动读取当前 iCloud 隐藏邮箱，跳过已有完整凭证的账号；缺取件链接的会自动补建。
+            </div>
             <el-form-item label="接码来源">
               <el-radio-group v-model="recoverySource">
                 <el-radio-button value="pool">使用号池隐私邮箱</el-radio-button>
@@ -354,7 +400,7 @@ async function runRecovery() {
             <el-button
               type="primary"
               :loading="recoveryBusy || runningSingle"
-              :disabled="recoveryBatchJob?.status === 'running'"
+              :disabled="['preparing', 'running'].includes(recoveryBatchJob?.status)"
               @click="runRecovery"
             >
               {{ recoverySource === 'manual'
@@ -362,15 +408,23 @@ async function runRecovery() {
                 : `找回选中的 ${recoveryEmails.length} 个邮箱` }}
             </el-button>
             <div
-              v-if="recoveryBatchJob && recoveryBatchJob.status === 'running'"
+              v-if="recoveryBatchJob && ['preparing', 'running'].includes(recoveryBatchJob.status)"
               class="recovery-progress"
             >
-              <el-progress :percentage="recoveryBatchPercent" />
+              <el-progress
+                v-if="recoveryBatchJob.status === 'running'"
+                :percentage="recoveryBatchPercent"
+              />
               <div class="hint">
-                已完成 {{ recoveryBatchJob.completed_count || 0 }}
-                / {{ recoveryBatchJob.items?.length || 0 }}
-                <template v-if="recoveryBatchJob.current_email">
-                  · 当前 {{ recoveryBatchJob.current_email }}
+                <template v-if="recoveryBatchJob.status === 'preparing'">
+                  {{ recoveryBatchJob.message || '正在扫描 iCloud 隐藏邮箱' }}
+                </template>
+                <template v-else>
+                  已完成 {{ recoveryBatchJob.completed_count || 0 }}
+                  / {{ recoveryBatchJob.items?.length || 0 }}
+                  <template v-if="recoveryBatchJob.current_email">
+                    · 当前 {{ recoveryBatchJob.current_email }}
+                  </template>
                 </template>
               </div>
             </div>

@@ -146,6 +146,13 @@ class RecoveryBatchReq(BaseModel):
     workflow_scope: str = "legacy"
 
 
+class ICloudRecoveryScanReq(BaseModel):
+    proxy: str = ""
+    otp_timeout: int = 180
+    want_2fa: bool = True
+    new_password: str = ""
+
+
 def _workflow_scope(value: str, default: str = "") -> str:
     scope = (value or "").strip().lower()
     return scope if scope in {"legacy", "integration"} else default
@@ -549,6 +556,30 @@ def api_recovery_batch_status(batch_id: str):
 @app.get("/api/recovery/batch/latest")
 def api_recovery_batch_latest():
     return {"ok": True, "job": registrar.get_latest_recovery_batch()}
+
+
+@app.post("/api/recovery/scan_icloud")
+def api_recovery_scan_icloud(req: ICloudRecoveryScanReq):
+    """Scan existing iCloud aliases, attach missing relays, and recover them."""
+    options = {
+        "proxy": req.proxy,
+        "otp_timeout": max(30, int(req.otp_timeout or 180)),
+        "want_2fa": req.want_2fa,
+        "new_password": (req.new_password or "").strip(),
+        "workflow_scope": "integration",
+    }
+    try:
+        job = integration.start_icloud_recovery_scan(options)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+    batch_id = str(job.get("id") or "")
+    logger.info(f"[recovery-scan] {batch_id} 已启动 iCloud 隐藏邮箱扫描")
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "run_id": batch_id,
+        "status": "preparing",
+    }
 
 
 @app.get("/api/runs/{run_id}/stream")

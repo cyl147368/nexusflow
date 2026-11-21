@@ -307,6 +307,154 @@ def list_icloud_aliases(account_id: str = "") -> dict:
     return {"ok": True, "account_id": account_id, "aliases": aliases or []}
 
 
+def prepare_icloud_recovery_items() -> dict:
+    """Attach mail-hub relay links to existing iCloud aliases lacking credentials."""
+    cfg = db.get_integration_internal_config()
+    account_id = str(cfg.get("icloud_account_id") or "").strip()
+    if not account_id:
+        raise IntegrationError("请先配置 iCloud 账号")
+    aliases = list_icloud_aliases(account_id).get("aliases") or []
+    items: list[dict] = []
+    imported = already_pooled = skipped_complete = 0
+    errors: list[dict] = []
+    for alias in aliases:
+        email = str(alias.get("email") or "").strip().lower()
+        if "@" not in email:
+            continue
+        registered = db.get_registered(email) or {}
+        if any(
+            str(registered.get(key) or "").strip()
+            for key in ("access_token", "session_token", "refresh_token")
+        ):
+            skipped_complete += 1
+            continue
+        pool_row = db.get_account(email)
+        relay_url = str((pool_row or {}).get("relay_url") or "").strip()
+        if relay_url:
+            already_pooled += 1
+        else:
+            try:
+                mailbox = _data(_request_json(
+                    "POST",
+                    _service_url(cfg["mailhub_url"], "/api/mailboxes"),
+                    token=cfg["mailhub_token"],
+                    payload={
+                        "email": email,
+                        "source": (
+                            "imap"
+                            if (cfg.get("receiver_mode") or "icloud") == "imap"
+                            else "icloud-prime"
+                        ),
+                        "icloud_url": cfg["icloud_url"],
+                        "icloud_token": cfg["icloud_token"],
+                        "icloud_account_id": account_id,
+                        "imap_host": cfg.get("imap_host") or "",
+                        "imap_port": int(cfg.get("imap_port") or 993),
+                        "imap_username": cfg.get("imap_email") or "",
+                        "imap_password": cfg.get("imap_password") or "",
+                        "imap_folder": cfg.get("imap_folder") or "INBOX",
+                        "imap_ssl": bool(cfg.get("imap_ssl", True)),
+                        "label": alias.get("label") or f"Recovery {email}",
+                    },
+                    timeout=90,
+                ))
+                relay_url = str(mailbox.get("relay_url") or "").strip()
+                if not relay_url:
+                    raise IntegrationError("Mail Hub 未返回 relay_url")
+                internal_relay_url = _internal_relay_url(
+                    cfg["mailhub_url"],
+                    mailbox,
+                )
+                db.import_accounts(
+                    f"{email}----{internal_relay_url}",
+                    kind="icloud_relay",
+                    workflow_scope=(
+                        str((pool_row or {}).get("workflow_scope") or "integration")
+                    ),
+                )
+                imported += 1
+            except Exception as exc:
+                errors.append({"email": email, "error": str(exc)[:300]})
+                continue
+        items.append({"email": email, "relay_url": relay_url})
+    return {
+        "ok": True,
+        "aliases": len(aliases),
+        "eligible": len(items),
+        "imported": imported,
+        "already_pooled": already_pooled,
+        "skipped_complete": skipped_complete,
+        "errors": errors,
+        "items": items,
+    }
+
+
+def start_icloud_recovery_scan(options: dict) -> dict:
+    """Prepare existing iCloud aliases in the background, then start recovery."""
+    scan_id = uuid.uuid4().hex[:12]
+    job = {
+        "id": scan_id,
+        "status": "preparing",
+        "mode": "icloud_scan",
+        "items": [],
+        "options": options,
+        "results": [],
+        "next_index": 0,
+        "completed_count": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "created_at": time.time(),
+        "updated_at": time.time(),
+        "message": "正在扫描 iCloud 隐藏邮箱并补建中转取件链接",
+    }
+    db.save_recovery_batch(job)
+
+    def worker() -> None:
+        try:
+            scan = prepare_icloud_recovery_items()
+            items = scan.get("items") or []
+            job.update(
+                scan=scan,
+                items=items,
+                message=(
+                    f"扫描完成：{scan.get('aliases', 0)} 个别名，"
+                    f"{len(items)} 个需要找回"
+                ),
+                updated_at=time.time(),
+            )
+            if items:
+                batch_options = dict(options)
+                batch_options["scan_summary"] = scan
+                registrar.start_recovery_batch(
+                    items,
+                    batch_options,
+                    batch_id=scan_id,
+                )
+            else:
+                job.update(
+                    status="done",
+                    finished_at=time.time(),
+                    message="没有需要找回的 iCloud 隐藏邮箱",
+                )
+                db.save_recovery_batch(job)
+        except Exception as exc:
+            job.update(
+                status="failed",
+                error=str(exc),
+                message=f"扫描 iCloud 隐藏邮箱失败: {exc}",
+                finished_at=time.time(),
+                updated_at=time.time(),
+            )
+            db.save_recovery_batch(job)
+
+    threading.Thread(
+        target=worker,
+        daemon=True,
+        name=f"icloud-recovery-scan-{scan_id}",
+    ).start()
+    return job
+
+
 def delete_icloud_alias(account_id: str, anonymous_id: str) -> dict:
     cfg = db.get_integration_internal_config()
     account_id = (account_id or cfg.get("icloud_account_id") or "").strip()

@@ -9,6 +9,8 @@ export const getRecoveryBatch = (batchId) =>
   http.get(`/api/recovery/batch/status/${encodeURIComponent(batchId)}`)
 export const getLatestRecoveryBatch = () =>
   http.get('/api/recovery/batch/latest')
+export const scanICloudRecovery = (payload) =>
+  http.post('/api/recovery/scan_icloud', payload)
 
 // ──────────────── 运行记录 ────────────────
 export const listRuns = (limit = 50) => http.get('/api/runs', { params: { limit } })
