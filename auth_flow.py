@@ -2487,6 +2487,28 @@ class AuthFlow:
         except Exception:
             return {}
 
+    def start_login_password_otp(self, continue_url: str = "") -> bool:
+        """Switch the login-password page to email OTP delivery.
+
+        OpenAI's current login page uses ``GET /email-otp/send`` with the
+        password-page URL as Referer. Sending it from ``/email-verification``
+        returns ``invalid_auth_step`` because the server-side step does not
+        match.
+        """
+        referer = "https://auth.openai.com/log-in/password"
+        candidate = self._normalize_continue_url(continue_url or "")
+        if "/log-in/password" in candidate:
+            referer = candidate
+        try:
+            self.send_otp(referer=referer)
+            return True
+        except Exception as exc:
+            logger.warning(f"密码页发送邮箱验证码失败: {exc}")
+
+        if self.send_passwordless_otp(referer):
+            return True
+        return self.resend_otp("https://auth.openai.com/email-verification")
+
     # ── Step 7.5: 提交 TOTP 2FA 验证码 ──
     def submit_mfa_totp(self, totp_code: str, challenge_id: str) -> dict:
         """提交 TOTP 2FA 验证码（已有账号登录时，密码验证后进入 mfa-challenge 状态）。
@@ -3826,21 +3848,7 @@ class AuthFlow:
                     self._is_existing_account = True
                     if force_email_otp:
                         otp_sent_at = time.time()
-                        otp_started = self.send_passwordless_otp(
-                            "https://auth.openai.com/log-in"
-                        )
-                        if not otp_started:
-                            otp_started = self.resend_otp(
-                                "https://auth.openai.com/email-verification"
-                            )
-                        if not otp_started:
-                            try:
-                                self.send_otp(
-                                    referer="https://auth.openai.com/email-verification"
-                                )
-                                otp_started = True
-                            except Exception as exc:
-                                logger.warning(f"强制邮箱验证码登录发码失败: {exc}")
+                        otp_started = self.start_login_password_otp(continue_url)
                         if not otp_started:
                             raise RuntimeError("无法从密码登录页切换到邮箱验证码登录")
                         otp_code = mail_provider.wait_for_otp(
