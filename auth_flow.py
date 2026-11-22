@@ -2039,6 +2039,27 @@ class AuthFlow:
         logger.debug("Sentinel Token 获取成功")
         return token
 
+    def _refresh_authorize_state(
+        self,
+        csrf_token: str,
+        email: str,
+        device_id: str,
+        sentinel_token: str,
+    ) -> tuple[str, str, str]:
+        """Refresh the short-lived authorize transaction before submitting it.
+
+        Sentinel PoW commonly takes 15-40 seconds. OpenAI's authorize state can
+        expire in that window even though the warmup cookies are valid, producing
+        ``409 invalid_state`` on ``authorize/continue``. Re-establishing the
+        authorize transaction after PoW keeps the submit near-immediate.
+        """
+        fresh_url = self.get_auth_url(csrf_token, email=email)
+        fresh_device = self.auth_oauth_init(fresh_url) or device_id
+        fresh_sentinel = sentinel_token
+        if fresh_device != device_id:
+            fresh_sentinel = self.get_sentinel_token(fresh_device)
+        return fresh_url, fresh_device, fresh_sentinel
+
     # ── Step 6: 提交注册邮箱 ──
     def authorize_continue(
         self,
@@ -3310,6 +3331,12 @@ class AuthFlow:
         auth_url = self.get_auth_url(csrf_token, email=email)
         device_id = self.auth_oauth_init(auth_url)
         sentinel = self.get_sentinel_token(device_id)
+        auth_url, device_id, sentinel = self._refresh_authorize_state(
+            csrf_token,
+            email,
+            device_id,
+            sentinel,
+        )
         is_new = self.signup(email, sentinel)
 
         # 号池邮箱被 OpenAI 标"已有账号" 处理策略:
@@ -3878,6 +3905,12 @@ class AuthFlow:
         auth_url = self.get_auth_url(csrf_token, email=email)
         device_id = self.auth_oauth_init(auth_url)
         sentinel = self.get_sentinel_token(device_id)
+        auth_url, device_id, sentinel = self._refresh_authorize_state(
+            csrf_token,
+            email,
+            device_id,
+            sentinel,
+        )
 
         continue_url = ""
         try:

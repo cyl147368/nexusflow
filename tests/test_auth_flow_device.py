@@ -197,6 +197,37 @@ class AuthFlowDeviceTest(unittest.TestCase):
 
         register_password.assert_not_called()
 
+    def test_authorize_state_is_refreshed_after_sentinel(self):
+        flow = AuthFlow(Config())
+        with (
+            patch.object(
+                flow,
+                "get_auth_url",
+                return_value="https://auth.test/fresh",
+            ) as get_auth_url,
+            patch.object(
+                flow,
+                "auth_oauth_init",
+                return_value="device-id",
+            ) as auth_oauth_init,
+        ):
+            result = flow._refresh_authorize_state(
+                "csrf",
+                "alias@example.com",
+                "device-id",
+                "sentinel",
+            )
+
+        self.assertEqual(
+            result,
+            ("https://auth.test/fresh", "device-id", "sentinel"),
+        )
+        get_auth_url.assert_called_once_with(
+            "csrf",
+            email="alias@example.com",
+        )
+        auth_oauth_init.assert_called_once_with("https://auth.test/fresh")
+
 
 if __name__ == "__main__":
     unittest.main()
