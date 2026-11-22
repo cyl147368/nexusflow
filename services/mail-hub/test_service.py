@@ -129,6 +129,34 @@ class MailHubApiTest(unittest.TestCase):
         )
         self.assertIn("alias@icloud.com", _message_recipients(message))
 
+    def test_plus_alias_requires_an_exact_recipient_match(self):
+        from service import _recipient_matches, _recipient_text_matches
+
+        message = email.message_from_string(
+            "From: sender@example.com\n"
+            "To: Hidden Alias <base+one@icloud.com>\n"
+            "Delivered-To: base@icloud.com\n"
+            "Subject: verification\n\n"
+            "Your code is 123456\n",
+            policy=email.policy.default,
+        )
+        self.assertTrue(_recipient_matches("base+one@icloud.com", message))
+        self.assertFalse(_recipient_matches("base+two@icloud.com", message))
+        self.assertFalse(_recipient_matches("base@icloud.com", message))
+        self.assertFalse(_recipient_matches("one@icloud.com", message))
+        self.assertTrue(
+            _recipient_text_matches(
+                "base+one@icloud.com",
+                "Hidden Alias <base+one@icloud.com>",
+            )
+        )
+        self.assertFalse(
+            _recipient_text_matches(
+                "base@icloud.com",
+                "Hidden Alias <base+one@icloud.com>",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,6 +72,226 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertFalse(config["auto_qualify"])
         self.assertEqual(config["payment_timeout"], 30)
 
+    def test_split_count_is_persisted_and_limited_to_two(self):
+        response = self.client.post(
+            "/api/integration/config",
+            json={"split_count": 2},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["config"]["split_count"], 2)
+
+        invalid = self.client.post(
+            "/api/integration/config",
+            json={"split_count": 3},
+        )
+        self.assertEqual(invalid.status_code, 422)
+
+    def test_split_mailbox_addresses_are_unique_plus_aliases(self):
+        from webui import integration
+
+        addresses = integration._split_mailbox_addresses(
+            "hidden.alias@icloud.com",
+            2,
+        )
+        self.assertEqual(len(addresses), 2)
+        self.assertEqual(len(set(addresses)), 2)
+        for address in addresses:
+            self.assertRegex(
+                address,
+                r"^hidden\.alias\+[a-z]{4}@icloud\.com$",
+            )
+
+    def test_cycle_registers_original_and_split_mailboxes(self):
+        from webui import integration
+
+        cfg = {
+            "icloud_account_id": "acc_split",
+            "mailhub_url": "http://mail-hub:8090",
+            "mailhub_token": "mail-token",
+            "icloud_url": "http://icloud-prime:8081",
+            "icloud_token": "icloud-token",
+            "receiver_mode": "imap",
+            "imap_host": "imap.example.com",
+            "imap_port": 993,
+            "imap_email": "receiver@example.com",
+            "imap_password": "secret",
+            "imap_folder": "INBOX",
+            "imap_ssl": True,
+            "proxy": "",
+            "otp_timeout": 60,
+            "want_access_token": True,
+            "want_session_token": True,
+            "want_refresh_token": True,
+            "want_2fa": False,
+            "split_count": 2,
+        }
+        integration._job = None
+        integration._set_job(id="split-cycle", status="running", cycle_no=0, logs=[])
+        mailbox_addresses = []
+        run_rows = []
+
+        def request_json(method, url, **kwargs):
+            del method
+            if url.endswith("/api/create"):
+                return {"email": "hidden.alias@icloud.com"}
+            if url.endswith("/api/mailboxes"):
+                address = kwargs["payload"]["email"]
+                mailbox_addresses.append(address)
+                token = f"token-{len(mailbox_addresses)}"
+                return {
+                    "email": address,
+                    "token": token,
+                    "relay_url": f"https://mail.example/mail/{token}",
+                }
+            raise AssertionError(f"unexpected URL: {url}")
+
+        def start_registration(account, options):
+            del options
+            run_id = f"split-run-{len(run_rows) + 1}"
+            run_rows.append({
+                "run_id": run_id,
+                "status": "done",
+                "error": "",
+                "error_category": "",
+                "email": account["email"],
+            })
+            return run_id
+
+        with (
+            patch.object(integration, "_preflight_registration_network"),
+            patch.object(integration, "_request_json", side_effect=request_json),
+            patch.object(
+                integration.registrar,
+                "start_registration",
+                side_effect=start_registration,
+            ),
+            patch.object(integration.db, "list_runs", side_effect=lambda limit: run_rows),
+        ):
+            result = integration._run_cycle("split-cycle", cfg)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["success_count"], 3)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(len(mailbox_addresses), 3)
+        self.assertEqual(mailbox_addresses[0], "hidden.alias@icloud.com")
+        self.assertTrue(all("+", address) for address in mailbox_addresses[1:])
+        self.assertEqual(
+            [item["email"] for item in run_rows],
+            mailbox_addresses,
+        )
+        self.assertEqual(
+            integration.get_job()["cycle_address_total"],
+            3,
+        )
+
+    def test_resume_continues_split_plan_without_creating_another_alias(self):
+        from webui import db, integration
+
+        base = "hidden.alias@icloud.com"
+        split = "hidden.alias+abcd@icloud.com"
+        plan = [
+            {
+                "email": base,
+                "role": "original",
+                "status": "success",
+                "token": "token-base",
+                "relay_url": "https://mail.example/mail/token-base",
+            },
+            {
+                "email": split,
+                "role": "split",
+                "status": "prepared",
+                "token": "token-split",
+                "relay_url": "https://mail.example/mail/token-split",
+            },
+        ]
+        db.import_accounts(
+            f"{base}----http://mail-hub:8090/mail/token-base",
+            kind="icloud_relay",
+            workflow_scope="integration",
+        )
+        db.import_accounts(
+            f"{split}----http://mail-hub:8090/mail/token-split",
+            kind="icloud_relay",
+            workflow_scope="integration",
+        )
+        integration._job = None
+        integration._set_job(
+            id="resume-split",
+            status="running",
+            stage="waiting_registration",
+            cycle_no=0,
+            email=split,
+            base_email=base,
+            split_emails=[split],
+            cycle_accounts=plan,
+            cycle_address_total=2,
+            run_id="old-split-run",
+            logs=[],
+        )
+
+        def start_registration(account, options):
+            del options
+            self.assertEqual(account["email"], split)
+            return "new-split-run"
+
+        with (
+            patch.object(
+                integration,
+                "list_icloud_aliases",
+                return_value={"aliases": [{"email": base}]},
+            ),
+            patch.object(
+                integration.db,
+                "get_registered",
+                side_effect=lambda email: (
+                    {"access_token": "at", "session_token": "st", "refresh_token": "rt"}
+                    if email == base else None
+                ),
+            ),
+            patch.object(
+                integration.registrar,
+                "start_registration",
+                side_effect=start_registration,
+            ),
+            patch.object(
+                integration.db,
+                "list_runs",
+                return_value=[{
+                    "run_id": "new-split-run",
+                    "status": "done",
+                    "error": "",
+                    "error_category": "",
+                }],
+            ),
+            patch.object(
+                integration,
+                "_request_json",
+                side_effect=AssertionError("resume must not create another alias"),
+            ),
+        ):
+            result = integration._run_cycle(
+                "resume-split",
+                {
+                    "icloud_account_id": "acc_resume",
+                    "mailhub_url": "http://mail-hub:8090",
+                    "mailhub_token": "mail-token",
+                    "icloud_url": "http://icloud-prime:8081",
+                    "icloud_token": "icloud-token",
+                    "otp_timeout": 60,
+                    "want_access_token": True,
+                    "want_session_token": True,
+                    "want_refresh_token": True,
+                    "want_2fa": False,
+                },
+                resuming=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["success_count"], 2)
+        self.assertEqual(result["failure_count"], 0)
+        self.assertEqual(set(result["processed_emails"]), {base, split})
+
     def test_integration_page_is_served(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)

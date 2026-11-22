@@ -248,6 +248,8 @@ def _refresh_icloud(mailbox: dict) -> None:
         uid = str(item.get("uid") or item.get("id") or item.get("message_id") or index)
         sender = str(item.get("from") or item.get("sender") or "")
         recipient = str(item.get("to") or item.get("recipient") or mailbox["email"])
+        if not _recipient_text_matches(mailbox["email"], recipient):
+            continue
         subject = str(item.get("subject") or "")
         body = str(item.get("body") or item.get("preview") or "")
         _store_message(mailbox["token"], f"icloud:{uid}", sender, recipient, subject, body)
@@ -299,6 +301,66 @@ def _message_recipients(message) -> str:
     for name in names:
         values.extend(str(value or "") for value in message.get_all(name, []))
     return " ".join(values)
+
+
+_ADDRESS_RE = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+)
+
+
+def _addresses_in(value: str) -> set[str]:
+    return {
+        match.group(0).lower()
+        for match in _ADDRESS_RE.finditer(str(value or ""))
+    }
+
+
+def _recipient_text_matches(target: str, header_text: str) -> bool:
+    needle = str(target or "").strip().lower()
+    return bool(needle) and needle in _addresses_in(header_text)
+
+
+def _plus_base(address: str) -> str:
+    local, domain = str(address or "").lower().rsplit("@", 1)
+    return f"{local.split('+', 1)[0]}@{domain}" if domain else address
+
+
+def _recipient_matches(target: str, message) -> bool:
+    """Match the complete mailbox address, including ``+tag`` aliases.
+
+    A plain substring check lets ``base@example.com`` consume mail addressed
+    to ``base+one@example.com``. That is harmless for one relay, but split
+    mailboxes share an underlying IMAP account, so every poll must claim only
+    the exact address used by that registration.
+
+    ``Delivered-To`` is a catch-all fallback for forwarding services. It must
+    not override an explicit plus-tag in ``To`` or the original mailbox would
+    consume every split message as well.
+    """
+    needle = str(target or "").strip().lower()
+    if not needle:
+        return False
+    direct_names = (
+        "To",
+        "Cc",
+        "X-Original-To",
+        "Envelope-To",
+        "X-Forwarded-To",
+    )
+    direct_values = []
+    for name in direct_names:
+        direct_values.extend(str(value or "") for value in message.get_all(name, []))
+    direct = _addresses_in(" ".join(direct_values))
+    if needle in direct:
+        return True
+    # An explicit split tag only matches its own address. For the base
+    # mailbox, reject a message that only names a tagged sibling.
+    if any(_plus_base(address) == needle for address in direct):
+        return False
+    delivered = _addresses_in(
+        " ".join(str(value or "") for value in message.get_all("Delivered-To", []))
+    )
+    return needle in delivered
 
 
 def _imap_scan_folders(client, configured: str) -> list[str]:
@@ -388,7 +450,7 @@ def _refresh_imap(mailbox: dict) -> dict:
                     continue
                 headers = email.message_from_bytes(raw, policy=email.policy.default)
                 recipient = _message_recipients(headers)
-                if target not in recipient.lower():
+                if not _recipient_matches(target, headers):
                     if len(unmatched_samples) < 20:
                         unmatched_samples.append({
                             "folder": folder,

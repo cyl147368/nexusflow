@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
+import string
 import threading
 import time
 import urllib.error
@@ -577,6 +579,70 @@ def _internal_relay_url(mailhub_url: str, mailbox: dict) -> str:
     )
 
 
+def _split_mailbox_addresses(email: str, count: int) -> list[str]:
+    """Return unique ``base+xxxx@domain`` aliases for one iCloud mailbox."""
+    address = str(email or "").strip().lower()
+    if address.count("@") != 1:
+        raise IntegrationError(f"无法分裂无效邮箱地址：{address or '(空)'}")
+    local, domain = address.rsplit("@", 1)
+    base_local = local.split("+", 1)[0]
+    if not base_local or not domain:
+        raise IntegrationError(f"无法分裂无效邮箱地址：{address}")
+    amount = max(0, min(2, int(count or 0)))
+    aliases: list[str] = []
+    used: set[str] = set()
+    while len(aliases) < amount:
+        suffix = "".join(
+            secrets.choice(string.ascii_lowercase)
+            for _ in range(4)
+        )
+        if suffix in used:
+            continue
+        used.add(suffix)
+        aliases.append(f"{base_local}+{suffix}@{domain}")
+    return aliases
+
+
+def _create_mailbox_link(
+    cfg: dict,
+    *,
+    address: str,
+    account_id: str,
+    label: str,
+) -> dict:
+    """Register one address in Mail Hub and return its public/internal link."""
+    mailbox = _data(_request_json(
+        "POST",
+        _service_url(cfg["mailhub_url"], "/api/mailboxes"),
+        token=cfg["mailhub_token"],
+        payload={
+            "email": address,
+            "source": "imap"
+            if (cfg.get("receiver_mode") or "icloud") == "imap"
+            else "icloud-prime",
+            "icloud_url": cfg["icloud_url"],
+            "icloud_token": cfg["icloud_token"],
+            "icloud_account_id": account_id,
+            "imap_host": cfg.get("imap_host") or "",
+            "imap_port": int(cfg.get("imap_port") or 993),
+            "imap_username": cfg.get("imap_email") or "",
+            "imap_password": cfg.get("imap_password") or "",
+            "imap_folder": cfg.get("imap_folder") or "INBOX",
+            "imap_ssl": bool(cfg.get("imap_ssl", True)),
+            "label": label,
+        },
+        timeout=90,
+    ))
+    relay_url = str(mailbox.get("relay_url") or "").strip()
+    if not relay_url:
+        raise IntegrationError("邮件中转服务没有返回 relay_url")
+    mailbox["internal_relay_url"] = _internal_relay_url(
+        cfg["mailhub_url"],
+        mailbox,
+    )
+    return mailbox
+
+
 def _is_quota_wait_error(message: str) -> bool:
     text = str(message or "").lower()
     return any(
@@ -629,6 +695,7 @@ _RESUMABLE_STAGES = {
     "registering_mailbox",
     "filling_pool",
     "registering_main",
+    "registering_split",
     "waiting_registration",
     "resuming",
 }
@@ -747,7 +814,7 @@ def _start_qualification(email: str, cfg: dict) -> None:
 
 
 def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
-    """Run exactly one alias -> mailbox -> registration cycle."""
+    """Create one hidden alias, prepare any splits, and register the batch."""
     account_id = str(cfg.get("icloud_account_id") or "").strip()
     if not account_id:
         raise IntegrationError("请先在第二步配置 iCloud 账号 ID")
@@ -755,7 +822,13 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
     job = get_job()
     cycle_no = int(job.get("cycle_no") or 0) + 1
     cycle_id = f"{job_id}-{cycle_no:04d}"
-    email = str(job.get("email") or "").strip().lower() if resuming else ""
+    resume_email = str(job.get("email") or "").strip().lower() if resuming else ""
+    base_email = (
+        str(job.get("base_email") or resume_email).strip().lower()
+        if resuming
+        else ""
+    )
+    resume_run_id = str(job.get("run_id") or "").strip() if resuming else ""
     if not resuming:
         _set_job(
             status="running",
@@ -765,6 +838,12 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             cycle_started_at=time.time(),
             error="",
             email="",
+            base_email="",
+            split_emails=[],
+            cycle_accounts=[],
+            cycle_address_index=0,
+            cycle_address_total=0,
+            cycle_address_results=[],
             alias=None,
             relay_url="",
             mailbox=None,
@@ -787,23 +866,31 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             cycle_no=cycle_no,
             cycle_id=cycle_id,
             error="",
+            email=resume_email,
+            base_email=base_email,
         )
-        _log(f"恢复第 {cycle_no} 轮：{email or '尚未创建隐藏邮箱'}")
+        _log(f"恢复第 {cycle_no} 轮：{resume_email or '尚未创建隐藏邮箱'}")
 
     _set_job(stage="creating_alias")
     alias_label = f"NexusFlow {cycle_id}"
     created = None
-    if resuming:
+    if resuming and base_email:
         try:
             existing = list_icloud_aliases(account_id).get("aliases") or []
             created = next(
-                (item for item in existing if item.get("email") == email),
+                (
+                    item for item in existing
+                    if str(item.get("email") or "").strip().lower() == base_email
+                ),
                 None,
             )
         except Exception as exc:
-            _log(f"恢复时查询已有隐藏邮箱失败，将重新创建：{exc}")
+            _log(f"恢复时查询已有隐藏邮箱失败，将沿用已持久化的地址：{exc}")
     if created:
-        _log(f"已找回重启前创建的隐藏邮箱：{created.get('email')}")
+        _log(f"已找回重启前创建的隐藏邮箱：{base_email}")
+    elif resuming and base_email:
+        created = {"email": base_email}
+        _log(f"已从持久化任务恢复隐藏邮箱：{base_email}")
     else:
         _log("正在通过 iCloud Prime 创建隐藏邮箱")
         try:
@@ -821,106 +908,246 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             raise IntegrationError(
                 "Apple 暂时限制隐藏邮箱创建额度，15 秒后自动重试"
             ) from exc
-    email = (created.get("email") or "").strip().lower()
-    if not email:
+    base_email = (created.get("email") or "").strip().lower()
+    if not base_email:
         raise IntegrationError("iCloud 创建成功但没有返回邮箱地址")
-    _set_job(stage="registering_mailbox", email=email, alias=created)
-    _log(f"隐藏邮箱已创建：{email}")
+    _log(f"隐藏邮箱已创建：{base_email}")
 
-    _log("正在邮件中转服务登记邮箱并生成取件链接")
-    mailbox = _data(_request_json(
-        "POST",
-        _service_url(cfg["mailhub_url"], "/api/mailboxes"),
-        token=cfg["mailhub_token"],
-        payload={
-            "email": email,
-            "source": "imap"
-            if (cfg.get("receiver_mode") or "icloud") == "imap"
-            else "icloud-prime",
-            "icloud_url": cfg["icloud_url"],
-            "icloud_token": cfg["icloud_token"],
-            "icloud_account_id": account_id,
-            "imap_host": cfg.get("imap_host") or "",
-            "imap_port": int(cfg.get("imap_port") or 993),
-            "imap_username": cfg.get("imap_email") or "",
-            "imap_password": cfg.get("imap_password") or "",
-            "imap_folder": cfg.get("imap_folder") or "INBOX",
-            "imap_ssl": bool(cfg.get("imap_ssl", True)),
-            "label": f"NexusFlow {cycle_id}",
-        },
-    ))
-    relay_url = str(mailbox.get("relay_url") or "").strip()
-    if not relay_url:
-        raise IntegrationError("邮件中转服务没有返回 relay_url")
-    internal_relay_url = _internal_relay_url(cfg["mailhub_url"], mailbox)
-    mailbox["internal_relay_url"] = internal_relay_url
-    _set_job(stage="filling_pool", relay_url=relay_url, mailbox=mailbox)
-    _log("取件链接已生成，正在写入主项目邮箱池")
-
-    db.import_accounts(
-        f"{email}----{internal_relay_url}",
-        kind="icloud_relay",
-        workflow_scope="integration",
-    )
-    db.set_setting("mail_source", "icloud_relay")
     if resuming:
-        completed = db.get_registered(email)
+        plan = [
+            dict(item)
+            for item in (job.get("cycle_accounts") or [])
+            if isinstance(item, dict)
+            and "@" in str(item.get("email") or "")
+        ]
+        if not plan:
+            plan = [{"email": base_email, "role": "original"}]
+        split_emails = [
+            str(item.get("email") or "").strip().lower()
+            for item in plan
+            if item.get("role") == "split"
+        ]
+        _log(
+            f"恢复本轮地址计划：原邮箱 1 个，分裂邮箱 {len(split_emails)} 个"
+        )
+    else:
+        split_emails = _split_mailbox_addresses(
+            base_email,
+            int(cfg.get("split_count") or 0),
+        )
+        plan = [{"email": base_email, "role": "original"}]
+        plan.extend(
+            {"email": address, "role": "split"}
+            for address in split_emails
+        )
+        if split_emails:
+            _log(
+                "已生成分裂邮箱："
+                + "、".join(split_emails)
+                + "；每个地址将独立入池并注册"
+            )
+
+    _set_job(
+        stage="registering_mailbox",
+        email=base_email,
+        base_email=base_email,
+        alias=created,
+        split_emails=split_emails,
+        cycle_accounts=plan,
+        cycle_address_total=len(plan),
+        cycle_address_index=0,
+        cycle_address_results=[],
+    )
+
+    for index, item in enumerate(plan):
+        address = str(item.get("email") or "").strip().lower()
+        if not address:
+            raise IntegrationError(f"第 {index + 1} 个本轮邮箱地址为空")
+        if item.get("relay_url") and item.get("token"):
+            internal_relay_url = _internal_relay_url(
+                cfg["mailhub_url"],
+                {"token": item["token"]},
+            )
+            db.import_accounts(
+                f"{address}----{internal_relay_url}",
+                kind="icloud_relay",
+                workflow_scope="integration",
+            )
+            continue
+
+        role_label = "原邮箱" if item.get("role") == "original" else "分裂邮箱"
+        _set_job(
+            stage="registering_mailbox",
+            email=address,
+            cycle_address_index=index,
+        )
+        _log(f"正在邮件中转服务登记{role_label}：{address}")
+        mailbox = _create_mailbox_link(
+            cfg,
+            address=address,
+            account_id=account_id,
+            label=f"NexusFlow {cycle_id} {role_label}",
+        )
+        item.update(
+            token=str(mailbox.get("token") or ""),
+            relay_url=str(mailbox.get("relay_url") or ""),
+            internal_relay_url=str(mailbox.get("internal_relay_url") or ""),
+            status="prepared",
+        )
+        db.import_accounts(
+            f"{address}----{mailbox['internal_relay_url']}",
+            kind="icloud_relay",
+            workflow_scope="integration",
+        )
+        db.set_setting("mail_source", "icloud_relay")
+        _set_job(
+            stage="filling_pool",
+            email=address,
+            relay_url=item["relay_url"],
+            mailbox=mailbox,
+            cycle_address_index=index,
+            cycle_accounts=plan,
+        )
+        _log(f"{role_label}已写入主项目邮箱池：{address}")
+
+    successes: list[dict] = []
+    failures: list[dict] = []
+    for index, item in enumerate(plan):
+        if _stop_event.is_set():
+            break
+        address = str(item.get("email") or "").strip().lower()
+        is_split = item.get("role") == "split"
+        stage = "registering_split" if is_split else "registering_main"
+        _set_job(
+            stage=stage,
+            email=address,
+            cycle_address_index=index,
+        )
+
+        completed = db.get_registered(address)
         if completed and any(
             str(completed.get(key) or "").strip()
             for key in ("access_token", "session_token", "refresh_token")
         ):
-            _log("检测到该邮箱已有完整凭证，恢复轮直接完成")
-            return {"ok": True, "email": email, "recovered": True}
-        previous_run_id = str(job.get("run_id") or "").strip()
-        if previous_run_id:
-            db.finish_run(
-                previous_run_id,
-                "failed",
-                "服务重启，旧进程终止，任务重新调度",
-                category="network",
+            item["status"] = "success"
+            successes.append({"email": address, "recovered": True, "role": item.get("role")})
+            _set_job(
+                cycle_accounts=plan,
+                cycle_address_results=successes + failures,
             )
-        db.reset_to_available(email)
-        _log("已释放重启前占用中的邮箱，准备重新启动注册")
+            _log(f"检测到完整凭证，跳过重复注册：{address}")
+            continue
 
-    account = db.claim_account(email, workflow_scope="integration")
-    if not account:
-        raise IntegrationError("邮箱已写入号池，但当前无法 claim（可能已使用中或已完成）")
+        if resuming and address == resume_email:
+            if resume_run_id:
+                db.finish_run(
+                    resume_run_id,
+                    "failed",
+                    "服务重启，旧进程终止，任务重新调度",
+                    category="network",
+                )
+            db.reset_to_available(address)
+            _log(f"已释放重启前占用中的邮箱：{address}")
 
-    _set_job(stage="registering_main", pool_account=account)
-    _log("邮箱池已就绪，开始执行主项目自动注册")
-    run_id = registrar.start_registration(account, {
-        "want_access_token": cfg["want_access_token"],
-        "want_session_token": cfg["want_session_token"],
-        "want_refresh_token": cfg["want_refresh_token"],
-        "proxy": cfg.get("proxy") or "",
-        "otp_timeout": cfg["otp_timeout"],
-        "allow_existing_login": True,
-        "want_2fa": cfg["want_2fa"],
-        "workflow_scope": "integration",
-    })
-    _set_job(run_id=run_id, stage="waiting_registration")
-    _log(f"主项目注册任务已启动：{run_id}")
+        account = db.claim_account(address, workflow_scope="integration")
+        if not account:
+            message = "邮箱已写入号池，但当前无法 claim（可能已使用中或已完成）"
+            item["status"] = "failed"
+            item["error"] = message
+            failures.append({
+                "email": address,
+                "role": item.get("role"),
+                "error": message,
+                "category": "account",
+            })
+            _set_job(
+                cycle_accounts=plan,
+                cycle_address_results=successes + failures,
+                last_result="failed",
+                error=message,
+                error_category="account",
+            )
+            _log(f"{address} 启动注册失败：{message}")
+            continue
 
-    deadline = time.time() + max(cfg["otp_timeout"] + 600, 900)
-    while time.time() < deadline:
-        row = next((x for x in db.list_runs(100) if x.get("run_id") == run_id), None)
-        if row and row.get("status") in {"done", "failed"}:
-            if row.get("status") == "done":
-                return {"ok": True, "email": email, "run_id": run_id}
-            return {
-                "ok": False,
-                "email": email,
-                "run_id": run_id,
-                "error": row.get("error") or "注册失败",
-                "category": row.get("error_category") or "unknown",
+        _set_job(pool_account=account)
+        _log(f"邮箱池已就绪，开始执行主项目自动注册：{address}")
+        run_id = registrar.start_registration(account, {
+            "want_access_token": cfg["want_access_token"],
+            "want_session_token": cfg["want_session_token"],
+            "want_refresh_token": cfg["want_refresh_token"],
+            "proxy": cfg.get("proxy") or "",
+            "otp_timeout": cfg["otp_timeout"],
+            "allow_existing_login": True,
+            "want_2fa": cfg["want_2fa"],
+            "workflow_scope": "integration",
+        })
+        _set_job(run_id=run_id, stage="waiting_registration")
+        _log(f"主项目注册任务已启动：{run_id}（{address}）")
+
+        deadline = time.time() + max(cfg["otp_timeout"] + 600, 900)
+        outcome = None
+        while time.time() < deadline:
+            row = next(
+                (x for x in db.list_runs(100) if x.get("run_id") == run_id),
+                None,
+            )
+            if row and row.get("status") in {"done", "failed"}:
+                outcome = row
+                break
+            time.sleep(2)
+        if outcome is None:
+            outcome = {
+                "status": "failed",
+                "error": "等待注册结果超时",
+                "error_category": "network",
             }
-        time.sleep(2)
+
+        if outcome.get("status") == "done":
+            item["status"] = "success"
+            successes.append({
+                "email": address,
+                "role": item.get("role"),
+                "run_id": run_id,
+            })
+            _log(f"注册成功：{address}")
+        else:
+            failure = {
+                "email": address,
+                "role": item.get("role"),
+                "run_id": run_id,
+                "error": outcome.get("error") or "注册失败",
+                "category": outcome.get("error_category") or "unknown",
+            }
+            item["status"] = "failed"
+            item["error"] = failure["error"]
+            failures.append(failure)
+            _log(f"注册失败：{address}；{failure['error']}")
+        _set_job(
+            cycle_accounts=plan,
+            cycle_address_results=successes + failures,
+        )
+
+    _set_job(
+        cycle_accounts=plan,
+        cycle_address_results=successes + failures,
+        cycle_address_index=max(0, len(successes) + len(failures) - 1),
+    )
+    last_failure = failures[-1] if failures else {}
     return {
-        "ok": False,
-        "email": email,
-        "run_id": run_id,
-        "error": "等待注册结果超时",
-        "category": "network",
+        "ok": bool(successes),
+        "email": base_email,
+        "base_email": base_email,
+        "split_emails": split_emails,
+        "processed_emails": [item["email"] for item in successes + failures],
+        "successes": successes,
+        "failures": failures,
+        "success_count": len(successes),
+        "failure_count": len(failures),
+        "error": last_failure.get("error") or (
+            "" if successes else "本轮没有成功注册的邮箱"
+        ),
+        "category": last_failure.get("category") or "unknown",
     }
 
 
@@ -986,16 +1213,41 @@ def _run_pipeline(job_id: str) -> None:
             attempt = int(get_job().get("cycle_no") or 1)
             updates = {"attempt_count": attempt}
             if result.get("ok"):
-                success_count += 1
+                cycle_successes = int(result.get("success_count") or 1)
+                cycle_failures = max(0, int(result.get("failure_count") or 0))
+                success_count += cycle_successes
+                failure_count = int(get_job().get("failure_count") or 0)
+                consecutive = int(get_job().get("consecutive_failures") or 0)
+                if cycle_failures:
+                    failure_count += cycle_failures
+                    consecutive += 1
+                else:
+                    consecutive = 0
                 updates.update(
                     success_count=success_count,
-                    consecutive_failures=0,
+                    failure_count=failure_count,
+                    consecutive_failures=consecutive,
                     stage="cycle_completed",
                     last_result="success",
+                    error=result.get("error") or "",
                 )
                 _set_job(**updates)
-                _log(f"第 {attempt} 轮注册成功：{result.get('email') or ''}")
-                _start_qualification(str(result.get("email") or ""), cfg)
+                _log(
+                    f"第 {attempt} 轮完成：成功 {cycle_successes} 个"
+                    + (
+                        f"，失败 {cycle_failures} 个"
+                        if cycle_failures else ""
+                    )
+                )
+                qualified_emails = [
+                    str(item.get("email") or "")
+                    for item in (result.get("successes") or [])
+                    if str(item.get("email") or "").strip()
+                ]
+                if not qualified_emails and result.get("email"):
+                    qualified_emails = [str(result["email"])]
+                for email in qualified_emails:
+                    _start_qualification(email, cfg)
             else:
                 category = str(result.get("category") or "unknown")
                 if category == "quota":
@@ -1138,6 +1390,12 @@ def start_pipeline() -> dict:
         logs=[],
         run_id="",
         email="",
+        base_email="",
+        split_emails=[],
+        cycle_accounts=[],
+        cycle_address_index=0,
+        cycle_address_total=0,
+        cycle_address_results=[],
         alias=None,
         relay_url="",
         mailbox=None,

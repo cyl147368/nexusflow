@@ -1513,6 +1513,7 @@ def get_integration_config() -> dict:
         "imap_ssl": get_setting("nx_imap_ssl", "1") in ("1", "true"),
         "proxy": get_setting("nx_proxy", ""),
         "otp_timeout": get_setting("nx_otp_timeout", "180"),
+        "split_count": max(0, min(2, int(get_setting("nx_split_count", "0") or 0))),
         "want_access_token": get_setting("nx_want_access_token", "1") in ("1", "true"),
         "want_session_token": get_setting("nx_want_session_token", "1") in ("1", "true"),
         "want_refresh_token": get_setting("nx_want_refresh_token", "1") in ("1", "true"),
@@ -1539,6 +1540,9 @@ def get_integration_internal_config() -> dict:
     cfg["imap_password"] = get_setting("nx_imap_password", "")
     cfg["imap_ssl"] = get_setting("nx_imap_ssl", "1") in ("1", "true")
     cfg["otp_timeout"] = int(get_setting("nx_otp_timeout", "180") or 180)
+    cfg["split_count"] = max(
+        0, min(2, int(get_setting("nx_split_count", "0") or 0))
+    )
     cfg["target_count"] = max(0, int(get_setting("nx_target_count", "0") or 0))
     cfg["cool_down_seconds"] = max(
         0, min(3600, int(get_setting("nx_cool_down_seconds", "30") or 30))
@@ -1564,6 +1568,7 @@ def save_integration_config(data: dict) -> None:
     for key in (
         "mailhub_url", "icloud_url", "icloud_account_id", "receiver_mode",
         "imap_host", "imap_port", "imap_email", "imap_folder", "proxy", "otp_timeout",
+        "split_count",
         "target_count", "cool_down_seconds", "momo_proxy", "upi_proxy",
         "payment_timeout",
     ):

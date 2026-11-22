@@ -66,6 +66,7 @@ const form = ref({
   imap_ssl: true,
   proxy: '',
   otp_timeout: 180,
+  split_count: 0,
   want_access_token: true,
   want_session_token: true,
   want_refresh_token: true,
@@ -108,6 +109,7 @@ const stageLabel = computed(() => ({
   registering_mailbox: '登记邮件中转',
   filling_pool: '写入邮箱池',
   registering_main: '启动主项目注册',
+  registering_split: '注册分裂邮箱',
   waiting_registration: '等待注册完成',
   completed: '流程完成',
   failed: '流程失败',
@@ -771,6 +773,17 @@ startPolling()
           <el-form-item label="OTP 超时（秒）">
             <el-input-number v-model="form.otp_timeout" :min="60" :max="600" />
           </el-form-item>
+          <el-form-item label="邮箱分裂">
+            <el-select v-model="form.split_count" style="width: 220px">
+              <el-option label="不分裂（只注册原邮箱）" :value="0" />
+              <el-option label="额外分裂 1 个" :value="1" />
+              <el-option label="额外分裂 2 个" :value="2" />
+            </el-select>
+            <div class="hint">
+              创建 iCloud 隐藏邮箱后，额外生成 {{ form.split_count }} 个
+              <code>@</code> 前带 <code>+xxxx</code> 随机字母的地址；每个地址独立入池并注册。
+            </div>
+          </el-form-item>
           <el-form-item label="连续运行">
             <el-switch v-model="form.continuous" active-text="自动开始下一轮" />
           </el-form-item>
@@ -830,9 +843,17 @@ startPolling()
           <div><span>累计注册成功</span><b>{{ registeredTotal }}</b></div>
           <div><span>一体化邮箱池</span><b>可用 {{ integrationStats.available }} / 进行中 {{ integrationStats.in_use }} / 失败 {{ integrationStats.failed }}</b></div>
           <div v-if="job.cycle_no"><span>连续轮次</span><b>第 {{ job.cycle_no }} 轮</b></div>
+          <div v-if="job.cycle_address_total > 1">
+            <span>本轮地址进度</span>
+            <b>{{ Math.min((job.cycle_address_index || 0) + 1, job.cycle_address_total) }} / {{ job.cycle_address_total }}</b>
+          </div>
           <div v-if="job.success_count || job.failure_count">
             <span>本次运行</span>
             <b>成功 {{ job.success_count || 0 }} / 失败 {{ job.failure_count || 0 }}</b>
+          </div>
+          <div v-if="job.base_email"><span>原邮箱</span><b>{{ job.base_email }}</b></div>
+          <div v-if="(job.split_emails || []).length">
+            <span>分裂邮箱</span><b class="break">{{ job.split_emails.join('、') }}</b>
           </div>
           <div v-if="job.email"><span>隐藏邮箱</span><b>{{ job.email }}</b></div>
           <div v-if="job.run_id"><span>主任务 Run ID</span><b>{{ job.run_id }}</b></div>

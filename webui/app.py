@@ -1511,6 +1511,7 @@ class IntegrationConfigReq(BaseModel):
     imap_ssl: Optional[bool] = None
     proxy: Optional[str] = None
     otp_timeout: Optional[int] = None
+    split_count: Optional[int] = Field(default=None, ge=0, le=2)
     want_access_token: Optional[bool] = None
     want_session_token: Optional[bool] = None
     want_refresh_token: Optional[bool] = None
