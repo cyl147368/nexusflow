@@ -6,7 +6,7 @@
 //
 // 校验策略是"全对才写"：只要有一行不合法，后端返 422 并列出每一行的
 // 行号和原因，一个号都不会写进库 —— 免得导进去一半对不上账。
-import { computed, onActivated, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { importAccounts } from '@/api/accounts'
 import { getMailProviders } from '@/api/settings'
@@ -48,7 +48,6 @@ async function loadProviders() {
 
 // 页面在 keep-alive 里，首次挂载和每次切回来都要拉一次 ——
 // 否则主人在「邮箱配置」加了新来源，切过来下拉框还是旧的
-onMounted(loadProviders)
 onActivated(loadProviders)
 
 async function doImport() {

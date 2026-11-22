@@ -186,24 +186,31 @@ function configPayload() {
 async function load() {
   loading.value = true
   try {
-    await proxyStore.load()
-    const r = await getIntegrationConfig()
-    const cfg = r.config || {}
+    const [proxyResult, configResult] = await Promise.allSettled([
+      proxyStore.load(),
+      getIntegrationConfig(),
+    ])
+    if (proxyResult.status === 'rejected') throw proxyResult.reason
+    if (configResult.status === 'rejected') throw configResult.reason
+    const cfg = configResult.value.config || {}
     form.value = { ...form.value, ...cfg }
-    job.value = r.job || job.value
+    job.value = configResult.value.job || job.value
     if (cfg.icloud_account_id) activeStep.value = 2
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
     loading.value = false
   }
+  await Promise.allSettled([loadMailHubInfo(), loadRegisteredCount()])
+}
+
+async function loadMailHubInfo() {
   try {
     const info = await getMailHubInfo()
     mailHubInfo.value = info.info || {}
   } catch (_) {
     mailHubInfo.value = {}
   }
-  await loadRegisteredCount()
 }
 
 async function loadRegisteredCount() {
@@ -469,8 +476,6 @@ onActivated(() => {
   startPolling()
 })
 onDeactivated(stopPolling)
-load()
-startPolling()
 </script>
 
 <template>

@@ -15,6 +15,9 @@ export const useStatsStore = defineStore('stats', () => {
     legacy: emptyStats(),
   })
   let timer = null
+let enabled = false
+let pollInterval = 5000
+let visibilityBound = false
 
   async function refresh() {
     try {
@@ -27,15 +30,38 @@ export const useStatsStore = defineStore('stats', () => {
     }
   }
 
-  function startPolling(interval = 5000) {
-    refresh()
+  function stopTimer() {
     if (timer) clearInterval(timer)
-    timer = setInterval(refresh, interval)
+    timer = null
+  }
+
+  function syncVisibility() {
+    if (!enabled) return
+    if (typeof document !== 'undefined' && document.hidden) {
+      stopTimer()
+      return
+    }
+    refresh()
+    stopTimer()
+    timer = setInterval(refresh, pollInterval)
+  }
+
+  function bindVisibility() {
+    if (visibilityBound || typeof document === 'undefined') return
+    document.addEventListener('visibilitychange', syncVisibility)
+    visibilityBound = true
+  }
+
+  function startPolling(interval = 5000) {
+    pollInterval = interval
+    enabled = true
+    bindVisibility()
+    syncVisibility()
   }
 
   function stopPolling() {
-    if (timer) clearInterval(timer)
-    timer = null
+    enabled = false
+    stopTimer()
   }
 
   return { stats, byWorkflow, refresh, startPolling, stopPolling }

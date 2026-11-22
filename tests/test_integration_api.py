@@ -296,6 +296,20 @@ class IntegrationApiTest(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("NexusFlow", response.text)
+        self.assertEqual(response.headers["cache-control"], "no-cache")
+
+    def test_hashed_assets_are_gzipped_and_cached_immutably(self):
+        from webui.app import STATIC_DIR
+
+        asset = next((STATIC_DIR / "assets").glob("index-*.js"))
+        response = self.client.get(
+            f"/static/assets/{asset.name}",
+            headers={"Accept-Encoding": "gzip"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-encoding"], "gzip")
+        self.assertIn("immutable", response.headers["cache-control"])
+        self.assertIn("accept-encoding", response.headers["vary"].lower())
 
     def test_cookie_normalize_accepts_curl(self):
         response = self.client.post(

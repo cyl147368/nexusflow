@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.gzip import GZipMiddleware
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -57,6 +58,22 @@ logger = logging.getLogger("webui")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="GPT Outlook Register WebUI", docs_url=None, redoc_url=None)
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+
+
+@app.middleware("http")
+async def static_asset_cache_policy(request: Request, call_next):
+    """Compress text responses and cache Vite's content-hashed bundles."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/assets/"):
+        response.headers.setdefault(
+            "Cache-Control",
+            "public, max-age=31536000, immutable",
+        )
+    elif path in {"/", "/static/index.html"}:
+        response.headers.setdefault("Cache-Control", "no-cache")
+    return response
 
 
 @app.on_event("startup")
