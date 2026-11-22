@@ -157,6 +157,27 @@ class MailHubApiTest(unittest.TestCase):
             )
         )
 
+    def test_split_alias_uses_the_shared_hidden_mailbox_after_apple_rewrite(self):
+        from service import _recipient_matches, _recipient_text_matches
+
+        message = email.message_from_string(
+            "From: sender@example.com\n"
+            "To: Hide My Email <base@icloud.com>\n"
+            "Subject: verification\n\n"
+            "Your code is 123456\n",
+            policy=email.policy.default,
+        )
+        self.assertTrue(
+            _recipient_matches("base+one@icloud.com", message)
+        )
+        self.assertTrue(_recipient_matches("base@icloud.com", message))
+        self.assertTrue(
+            _recipient_text_matches(
+                "base+one@icloud.com",
+                "Hide My Email <base@icloud.com>",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

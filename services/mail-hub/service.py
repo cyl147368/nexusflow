@@ -234,7 +234,10 @@ def _refresh_icloud(mailbox: dict) -> None:
         return
     query = urllib.parse.urlencode({
         "account_id": mailbox.get("icloud_account") or "",
-        "alias": mailbox["email"],
+        # Apple strips the local-part +tag before forwarding an iCloud hidden
+        # alias. Query the shared base alias and keep per-split rows isolated
+        # by the recipient filter below.
+        "alias": _plus_base(mailbox["email"]),
         "limit": 30,
         "days": 7,
         "body": 1,
@@ -317,7 +320,13 @@ def _addresses_in(value: str) -> set[str]:
 
 def _recipient_text_matches(target: str, header_text: str) -> bool:
     needle = str(target or "").strip().lower()
-    return bool(needle) and needle in _addresses_in(header_text)
+    addresses = _addresses_in(header_text)
+    if not needle or needle in addresses:
+        return bool(needle)
+    return (
+        "+" in needle.split("@", 1)[0]
+        and _plus_base(needle) in addresses
+    )
 
 
 def _plus_base(address: str) -> str:
@@ -353,14 +362,34 @@ def _recipient_matches(target: str, message) -> bool:
     direct = _addresses_in(" ".join(direct_values))
     if needle in direct:
         return True
+    if (
+        "+" in needle.split("@", 1)[0]
+        and _plus_base(needle) in direct
+    ):
+        return True
     # An explicit split tag only matches its own address. For the base
     # mailbox, reject a message that only names a tagged sibling.
     if any(_plus_base(address) == needle for address in direct):
         return False
+    if (
+        "+" in needle.split("@", 1)[0]
+        and any(
+            address != needle
+            and "+" in address.split("@", 1)[0]
+            and _plus_base(address) == _plus_base(needle)
+            for address in direct
+        )
+    ):
+        return False
     delivered = _addresses_in(
         " ".join(str(value or "") for value in message.get_all("Delivered-To", []))
     )
-    return needle in delivered
+    if needle in delivered:
+        return True
+    return (
+        "+" in needle.split("@", 1)[0]
+        and _plus_base(needle) in delivered
+    )
 
 
 def _imap_scan_folders(client, configured: str) -> list[str]:
