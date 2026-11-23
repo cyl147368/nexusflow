@@ -310,6 +310,50 @@ class AuthFlowDeviceTest(unittest.TestCase):
         submit.assert_called_once_with("123456", "challenge-123")
         self.assertEqual(result, completed)
 
+    def test_recovery_completes_about_you_before_session_handoff(self):
+        class StopAfterCreateAccount(Exception):
+            pass
+
+        class Mail:
+            def wait_for_otp(self, *args, **kwargs):
+                return "123456"
+
+        flow = AuthFlow(Config(), env_overrides={"OTP_TIMEOUT": "30"})
+        with (
+            patch.object(flow, "check_proxy", return_value=True),
+            patch.object(flow, "warmup", return_value=True),
+            patch.object(flow, "get_csrf_token", return_value="csrf"),
+            patch.object(flow, "get_auth_url", return_value="https://auth.test"),
+            patch.object(flow, "auth_oauth_init", return_value="device"),
+            patch.object(flow, "kickoff_otp_delivery", return_value=True),
+            patch.object(
+                flow,
+                "verify_otp",
+                return_value={
+                    "continue_url": "https://auth.openai.com/about-you",
+                    "page": {"type": "about_you"},
+                },
+            ),
+            patch.object(flow, "fetch_client_auth_session_dump"),
+            patch.object(
+                flow,
+                "create_account",
+                side_effect=StopAfterCreateAccount(),
+            ) as create_account,
+        ):
+            flow._is_existing_account = True
+            flow._authorize_landing_url = (
+                "https://auth.openai.com/email-verification"
+            )
+            with self.assertRaises(StopAfterCreateAccount):
+                flow.run_protocol_login(
+                    Mail(),
+                    "alias@example.com",
+                    force_email_otp=True,
+                )
+
+        create_account.assert_called_once_with()
+
     def test_authorize_state_is_refreshed_after_sentinel(self):
         flow = AuthFlow(Config())
         with (

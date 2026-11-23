@@ -4966,6 +4966,18 @@ class AuthFlow:
                     raise
             continue_url = self._extract_continue_url_from_step(otp_resp)
             continue_url = self._normalize_continue_url(continue_url)
+            otp_page_type = (self._extract_page_type(otp_resp) or "").lower()
+            if force_email_otp and (
+                otp_page_type == "about_you"
+                or "/about-you" in (continue_url or "")
+            ):
+                # Some older passwordless accounts were persisted before their
+                # onboarding profile was finalized.  The OTP is valid and
+                # OpenAI directs the same email to /about-you; completing that
+                # step repairs the existing signup instead of inventing a new
+                # mailbox/email identity.
+                logger.info("找回登录落到 about-you，补全账号资料以继续")
+                continue_url = self.create_account()
             if self._is_add_phone_state(page_type=self._extract_page_type(otp_resp), continue_url=continue_url):
                 continue_url = self._normalize_continue_url(
                     self._handle_add_phone_verification(continue_url=continue_url)
