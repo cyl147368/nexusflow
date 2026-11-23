@@ -600,6 +600,31 @@ def _do_recovery(
             _recovery_active.pop(email, None)
 
 
+def fail_orphaned_runs() -> int:
+    """Close runs left by a previous process, preserving resumed batch queues."""
+    with _lock:
+        active_ids = set(_run_queues)
+    active_ids.update(
+        str(job.get("id") or "").strip()
+        for job in db.list_resumable_recovery_batches()
+        if str(job.get("id") or "").strip()
+    )
+    failed = 0
+    for row in db.list_runs(1000):
+        if row.get("status") != "running":
+            continue
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id or run_id in active_ids:
+            continue
+        if db.fail_running_run(
+            run_id,
+            "服务已重启，旧进程中的任务已终止",
+            category="network",
+        ):
+            failed += 1
+    return failed
+
+
 def _try_export_to_panels(run_id: str, cred: dict) -> None:
     """注册完成后可选地把凭证导出到 CPA / SUB2API 面板。
 

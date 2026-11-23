@@ -1202,6 +1202,25 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(job["id"], "batch-persisted")
         self.assertEqual(job["items"][0]["email"], "one@example.com")
 
+    def test_startup_fails_orphaned_runs_but_preserves_active_queues(self):
+        import queue
+
+        from webui import db, registrar
+
+        db.create_run("orphan-run", "orphan@example.com", "/tmp/orphan.log")
+        db.create_run("active-run", "active@example.com", "/tmp/active.log")
+        with registrar._lock:
+            registrar._run_queues["active-run"] = queue.Queue()
+        try:
+            self.assertEqual(registrar.fail_orphaned_runs(), 1)
+        finally:
+            with registrar._lock:
+                registrar._run_queues.pop("active-run", None)
+
+        rows = {row["run_id"]: row for row in db.list_runs(100)}
+        self.assertEqual(rows["orphan-run"]["status"], "failed")
+        self.assertEqual(rows["active-run"]["status"], "running")
+
     def test_recovery_batch_processes_items_in_order_and_keeps_partial_results(self):
         from webui import account_recovery, db, registrar
         from webui.account_recovery import RecoveryError

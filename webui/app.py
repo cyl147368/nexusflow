@@ -80,6 +80,7 @@ async def static_asset_cache_policy(request: Request, call_next):
 @app.on_event("startup")
 def resume_integration_job():
     """Resume unfinished one-click jobs from SQLite after a container restart."""
+    registrar.fail_orphaned_runs()
     integration.resume_pending()
     registrar.resume_recovery_batches()
 

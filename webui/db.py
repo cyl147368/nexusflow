@@ -1264,6 +1264,28 @@ def finish_run(run_id: str, status: str, error: str = "", category: str = "") ->
         con.commit()
 
 
+def fail_running_run(
+    run_id: str,
+    error: str = "",
+    category: str = "",
+) -> bool:
+    """Finish a run only if it is still marked running."""
+    with _lock:
+        con = _conn()
+        rc = con.execute(
+            "UPDATE runs SET status='failed', finished_at=?, error=?, "
+            "error_category=? WHERE run_id=? AND status='running'",
+            (
+                time.time(),
+                (error or "")[:500],
+                category or None,
+                run_id,
+            ),
+        )
+        con.commit()
+        return rc.rowcount > 0
+
+
 def list_runs(limit: int = 50) -> list[dict]:
     con = _conn()
     cur = con.execute(
