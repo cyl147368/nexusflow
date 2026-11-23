@@ -4935,6 +4935,16 @@ class AuthFlow:
                     self.verify_otp(otp_code),
                     email,
                 )
+                logger.info(
+                    "OTP 后页面: type=%s continue_url=%s",
+                    (self._extract_page_type(otp_resp) or "(empty)"),
+                    (
+                        self._normalize_continue_url(
+                            self._extract_continue_url_from_step(otp_resp)
+                        )
+                        or "(empty)"
+                    )[:180],
+                )
                 self.fetch_client_auth_session_dump("post_verify_otp_protocol")
             except RuntimeError as e:
                 if any(code in str(e) for code in ("401", "409")):
