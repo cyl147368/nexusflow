@@ -67,7 +67,6 @@ def _recover_account_login_first(
     """
     emit_log = log or (lambda _message: None)
     emit_phase = phase or (lambda _name, _payload: None)
-
     email = str(account.get("email") or "").strip().lower()
     if "@" not in email:
         raise RecoveryError("请输入有效邮箱")
@@ -247,6 +246,7 @@ def recover_account(
         )
     except Exception as exc:
         first_error = str(exc)
+        first_login_error = first_error
         if (
             "username_not_found" in first_error.lower()
             or _mail_wait_failure(first_error)
@@ -379,37 +379,10 @@ def recover_account(
                 errors.append(f"{first_error}；新会话重试仍失败: {retry_exc}")
                 emit_log(f"新会话登录仍失败: {retry_exc}")
     else:
-        # 密码重置失败时，原 AuthFlow 的 OAuth state 往往已经失效。继续在同一
-        # session 上探测只会重复 409 invalid_state，必须从 warmup 开始新建会话。
-        flow = new_flow()
-        emit_phase("email_login", {"email": email})
-        emit_log("尝试用邮箱验证码登录无密码/旧密码账号")
-        try:
-            result = flow.run_protocol_login(
-                mail,
-                email,
-                password="",
-                force_email_otp=True,
-            )
-            try:
-                add_info = flow.set_or_reset_password(
-                    email,
-                    new_password,
-                    has_existing_password=False,
-                )
-                password_ok = True
-                password_status = str(add_info.get("mode") or "add")
-                errors = [
-                    error for error in errors
-                    if not error.startswith("密码重置失败:")
-                ]
-                emit_log("已为无密码账号补设新密码")
-            except Exception as exc:
-                errors.append(f"补设密码失败: {exc}")
-                emit_log(f"补设密码失败: {exc}")
-        except Exception as exc:
-            errors.append(f"邮箱验证码登录失败: {exc}")
-            emit_log(f"邮箱验证码登录失败: {exc}")
+        # The first recovery stage already ran a fresh email-OTP login. A third
+        # login repeats two long OTP waits and commonly causes 429, so stop.
+        errors.append(f"邮箱验证码登录失败: {first_login_error}")
+        emit_log("邮箱验证码登录和密码重置均失败，停止重复尝试")
 
     if result is not None:
         data = result.to_dict()
