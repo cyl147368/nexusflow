@@ -15,7 +15,37 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates nodejs \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        nodejs \
+        libgtk-3-0 \
+        libdbus-glib-1-2 \
+        libx11-xcb1 \
+        libasound2 \
+        libnss3 \
+        libnspr4 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libgbm1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxi6 \
+        libxkbcommon0 \
+        libxrandr2 \
+        libxrender1 \
+        libxshmfence1 \
+        libxt6 \
+        libxtst6 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        fonts-liberation \
+        fonts-noto-color-emoji \
+        fontconfig \
+        xvfb \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
