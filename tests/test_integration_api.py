@@ -599,15 +599,18 @@ class IntegrationApiTest(unittest.TestCase):
             db.save_registered({
                 "email": f"unchecked-{index}@example.com",
                 "workflow_scope": "integration",
+                "access_token": f"at-{index}",
             })
         db.save_registered({
             "email": "checked@example.com",
             "workflow_scope": "integration",
+            "access_token": "checked-at",
             "plus_check": {"status": "free", "label": "Free"},
         })
         db.save_registered({
             "email": "legacy-only@example.com",
             "workflow_scope": "legacy",
+            "access_token": "legacy-at",
         })
 
         response = self.client.get(
@@ -623,6 +626,28 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertNotIn("checked@example.com", body["emails"])
         self.assertNotIn("legacy-only@example.com", body["emails"])
 
+    def test_unchecked_detection_skips_accounts_without_access_token(self):
+        from webui import db
+
+        db.save_registered({
+            "email": "usable@example.com",
+            "workflow_scope": "integration",
+            "access_token": "usable-at",
+        })
+        db.save_registered({
+            "email": "incomplete@example.com",
+            "workflow_scope": "integration",
+            "access_token": "",
+        })
+        response = self.client.get(
+            "/api/registered/unchecked_emails",
+            params={"workflow_scope": "integration"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["emails"], ["usable@example.com"])
+        self.assertEqual(body["skipped_no_at"], 1)
+
     def test_retest_emails_exclude_existing_plus_statuses(self):
         from webui import db
 
@@ -635,6 +660,7 @@ class IntegrationApiTest(unittest.TestCase):
             ("active@example.com", "plus_active"),
         ):
             row = {"email": email, "workflow_scope": "integration"}
+            row["access_token"] = f"at-{status or 'unchecked'}"
             if status:
                 row["plus_check"] = {"status": status, "label": status}
             db.save_registered(row)
@@ -654,6 +680,137 @@ class IntegrationApiTest(unittest.TestCase):
                 "banned@example.com",
                 "invalid@example.com",
             },
+        )
+
+    def test_plus_payload_prefers_default_and_detects_free_trial(self):
+        from webui.app import _classify_plus_payload
+
+        payload = {
+            "accounts": {
+                "other": {
+                    "account": {"plan_type": "free"},
+                    "eligible_promo_campaigns": {},
+                },
+                "default": {
+                    "account": {"plan_type": "free"},
+                    "entitlement": {"has_active_subscription": False},
+                    "eligible_promo_campaigns": {
+                        "plus": {
+                            "id": "plus-1-month-free",
+                            "metadata": {
+                                "discount": {"percentage": 100},
+                                "promotion_type_label": "1-month free trial",
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        self.assertEqual(
+            _classify_plus_payload(payload)["status"],
+            "plus_eligible",
+        )
+
+    def test_discounted_plus_offer_is_not_a_free_trial(self):
+        from webui.app import _classify_plus_payload
+
+        payload = {
+            "accounts": {
+                "default": {
+                    "account": {"plan_type": "free"},
+                    "entitlement": {"has_active_subscription": False},
+                    "eligible_promo_campaigns": {
+                        "plus": {
+                            "id": "plus-1-month-50-pct-off",
+                            "metadata": {
+                                "discount": {"percentage": 50},
+                                "promotion_type_label": "1-month 50% off",
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        self.assertEqual(_classify_plus_payload(payload)["status"], "free")
+
+    def test_fast_plus_check_classifies_and_persists_results(self):
+        from webui import db
+
+        db.save_registered({
+            "email": "plus-token@example.com",
+            "workflow_scope": "integration",
+            "access_token": "plus-token",
+        })
+        db.save_registered({
+            "email": "free-token@example.com",
+            "workflow_scope": "integration",
+            "access_token": "free-token",
+        })
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def __init__(self, promo):
+                self.promo = promo
+
+            def json(self):
+                return {
+                    "accounts": {
+                        "default": {
+                            "account": {"plan_type": "free"},
+                            "entitlement": {
+                                "has_active_subscription": False,
+                            },
+                            "eligible_promo_campaigns": self.promo,
+                        },
+                    },
+                }
+
+        class FakeSession:
+            def get(self, url, headers=None, timeout=0):
+                del url, timeout
+                token = (headers or {}).get("Authorization", "")
+                if "plus-token" in token:
+                    return FakeResponse({
+                        "plus": {
+                            "id": "plus-1-month-free",
+                            "metadata": {
+                                "discount": {"percentage": 100},
+                                "promotion_type_label": "1-month free trial",
+                            },
+                        },
+                    })
+                return FakeResponse({})
+
+            def close(self):
+                return None
+
+        with patch(
+            "http_client.create_http_session",
+            return_value=FakeSession(),
+        ):
+            response = self.client.post(
+                "/api/registered/check_plus_fast",
+                json={
+                    "emails": [
+                        "plus-token@example.com",
+                        "free-token@example.com",
+                    ],
+                    "proxy": "",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        self.assertEqual(
+            results["plus-token@example.com"]["status"],
+            "plus_eligible",
+        )
+        self.assertEqual(results["free-token@example.com"]["status"], "free")
+        self.assertEqual(
+            db.get_registered("plus-token@example.com")["extra"]["plus_check"]["status"],
+            "plus_eligible",
         )
 
     def test_refresh_access_tokens_endpoint(self):

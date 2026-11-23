@@ -51,7 +51,7 @@ export const listExportFormats = () => http.get('/api/registered/export/formats'
 export const exportRegistered = (payload) => http.post('/api/registered/export', payload)
 
 export const checkPlus = (emails, proxy = '') =>
-  http.post('/api/registered/check_plus', { emails, proxy })
+  http.post('/api/registered/check_plus_fast', { emails, proxy })
 
 export const refreshAccessTokens = (emails, proxy = '') =>
   http.post('/api/registered/refresh_at', { emails, proxy })

@@ -109,7 +109,7 @@ async function doCheck(mode) {
     }
     // Keep every request below the API's 60s timeout. The backend checks one
     // account at a time, so sending hundreds in one request can look like a 502.
-    const batchSize = 10
+    const batchSize = 20
     const merged = {}
     let note = ''
     for (let start = 0; start < emails.length; start += batchSize) {
@@ -120,6 +120,7 @@ async function doCheck(mode) {
       note = response.note || note
     }
     let plus = 0, free = 0, banned = 0, failed = 0, badToken = 0
+    let noAt = 0, notFound = 0
     for (const [email, info] of Object.entries(merged)) {
       const row = rows.value.find((r) => r.email === email)
       if (row) row.plus_check = info
@@ -127,6 +128,8 @@ async function doCheck(mode) {
       else if (info.status === 'banned') banned++
       else if (info.status === 'free') free++
       else if (info.status === 'token_invalid') badToken++
+      else if (info.status === 'no_at') noAt++
+      else if (info.status === 'not_found') notFound++
       else if (info.status === 'error') failed++
     }
     // failed / note 不入库，只是这一次的现场说明：
@@ -135,9 +138,12 @@ async function doCheck(mode) {
     // AT 没过期却 401 = 被吊销，大概率就是封号，不该再说得像只是要重新登录。
     const parts = [`完成: ${plus} 可用Plus, ${free} Free, ${banned} 封号`]
     if (badToken) parts.push(`${badToken} 个凭证失效（AT 被吊销，多半已封）`)
+    if (noAt) parts.push(`${noAt} 个无AT，已跳过`)
+    if (notFound) parts.push(`${notFound} 个记录已不存在`)
     if (failed) parts.push(`${failed} 个没检测成`)
     if (note) parts.push(note)
     checkResult.value = parts.join(' · ')
+    await load()
   } catch (e) {
     checkResult.value = ''
     ElMessage.error('检查失败: ' + e.message)

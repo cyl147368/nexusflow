@@ -996,7 +996,11 @@ def update_registered_tokens(
         return rc.rowcount > 0
 
 
-def _registered_where(filt: str, workflow_scope: str = "") -> str:
+def _registered_where(
+    filt: str,
+    workflow_scope: str = "",
+    require_access_token: bool = False,
+) -> str:
     clauses = []
     if filt == "successful":
         clauses.append(
@@ -1026,6 +1030,8 @@ def _registered_where(filt: str, workflow_scope: str = "") -> str:
         # token_invalid 从 2026-08-10 起会写库，得能筛出来，否则等于埋了：
         # 它既不在 unchecked 里（已有结论），又不在 free/plus/banned 里。
         clauses.append("extra_json LIKE '%\"token_invalid\"%'")
+    if require_access_token:
+        clauses.append("coalesce(length(access_token), 0) > 0")
     scope = (workflow_scope or "").strip().lower()
     if scope in {"integration", "legacy"}:
         clauses.append(f"workflow_scope='{scope}'")
@@ -1045,9 +1051,14 @@ def list_registered_emails(
     filter_rt: str = "unchecked",
     workflow_scope: str = "",
     limit: int = 50000,
+    require_access_token: bool = False,
 ) -> list[str]:
     """Return matching email addresses without loading credential columns."""
-    where = _registered_where(filter_rt, workflow_scope)
+    where = _registered_where(
+        filter_rt,
+        workflow_scope,
+        require_access_token=require_access_token,
+    )
     with closing(_conn()) as con:
         rows = con.execute(
             f"SELECT email FROM registered {where} "

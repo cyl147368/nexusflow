@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+import re
 import secrets
 import sys
 import time
@@ -705,11 +706,14 @@ def api_registered_unchecked_emails(
         filter_rt="unchecked",
         workflow_scope=scope,
         limit=max(1, min(int(limit), 50000)),
+        require_access_token=True,
     )
+    total = db.count_registered(filter_rt="unchecked", workflow_scope=scope)
     return {
         "ok": True,
         "emails": emails,
         "total": len(emails),
+        "skipped_no_at": max(0, total - len(emails)),
         "workflow_scope": scope,
     }
 
@@ -725,11 +729,14 @@ def api_registered_retest_emails(
         filter_rt="not_plus",
         workflow_scope=scope,
         limit=max(1, min(int(limit), 50000)),
+        require_access_token=True,
     )
+    total = db.count_registered(filter_rt="not_plus", workflow_scope=scope)
     return {
         "ok": True,
         "emails": emails,
         "total": len(emails),
+        "skipped_no_at": max(0, total - len(emails)),
         "workflow_scope": scope,
     }
 
@@ -1247,6 +1254,53 @@ def _looks_deactivated(body: str) -> bool:
     return any(m in body.lower() for m in _DEACTIVATED_MARKERS)
 
 
+def _classify_plus_payload(data: dict) -> dict:
+    """Classify the active account from an accounts/check response."""
+    accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
+    if not isinstance(accounts, dict) or not accounts:
+        return {"status": "error", "label": "无账户数据"}
+    info = accounts.get("default")
+    if not isinstance(info, dict):
+        info = next(
+            (
+                item
+                for item in accounts.values()
+                if isinstance(item, dict) and item.get("account")
+            ),
+            {},
+        )
+    account = info.get("account") or {}
+    entitlement = info.get("entitlement") or {}
+    if account.get("is_deactivated", False):
+        return {"status": "banned", "label": "封号"}
+    plan = str(account.get("plan_type") or "free").lower()
+    if plan in {"plus", "pro"} or entitlement.get("has_active_subscription"):
+        return {"status": "plus_active", "label": "Plus生效中"}
+
+    campaigns = info.get("eligible_promo_campaigns") or {}
+    plus_campaign = (
+        campaigns.get("plus")
+        if isinstance(campaigns, dict)
+        else None
+    )
+    if isinstance(plus_campaign, dict):
+        metadata = plus_campaign.get("metadata") or {}
+        discount = metadata.get("discount") or {}
+        try:
+            percentage = float(discount.get("percentage") or 0)
+        except (TypeError, ValueError):
+            percentage = 0.0
+        label = str(metadata.get("promotion_type_label") or "").lower()
+        campaign_id = str(plus_campaign.get("id") or "").lower()
+        if (
+            percentage >= 100
+            or "free" in label
+            or "plus-1-month-free" in campaign_id
+        ):
+            return {"status": "plus_eligible", "label": "可领Plus试用"}
+    return {"status": "free", "label": "Free"}
+
+
 @app.post("/api/registered/check_plus")
 def api_check_plus(req: CheckPlusReq):
     """用 access_token 查询账号的 Plus 试用状态。"""
@@ -1413,6 +1467,164 @@ def api_check_plus(req: CheckPlusReq):
             db.update_plus_check(email, {**info, "checked_at": checked_at})
 
     return {"ok": True, "results": results, "note": note}
+
+
+@app.post("/api/registered/check_plus_fast")
+def api_check_plus_fast(req: CheckPlusReq):
+    """Parallel Plus check that honors the saved cookie/device identity."""
+    from concurrent.futures import ThreadPoolExecutor
+    from http_client import create_http_session
+
+    log = logging.getLogger("webui")
+    url = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/145.0.0.0 Safari/537.36"
+    )
+    proxy = req.proxy.strip()
+    results: dict[str, dict] = {}
+    jobs = []
+
+    for raw_email in req.emails:
+        email = str(raw_email or "").strip().lower()
+        if not email or email in results:
+            continue
+        if any(job[0] == email for job in jobs):
+            continue
+        cred = db.get_registered(email)
+        if not cred:
+            results[email] = {"status": "not_found", "label": "未找到"}
+            continue
+        access_token = str(cred.get("access_token") or "").strip()
+        if not access_token:
+            results[email] = {"status": "no_at", "label": "无AT"}
+            continue
+        try:
+            claims = _get_auth(_decode_jwt_payload(access_token))
+        except Exception:  # noqa: BLE001
+            claims = {}
+        account_id = str(
+            claims.get("chatgpt_account_id")
+            or claims.get("account_id")
+            or ""
+        ).strip()
+        cookie_header = str(cred.get("cookie_header") or "").strip()
+        cookie_device = re.search(
+            r"(?:^|;\s*)oai-did=([^;]+)",
+            cookie_header,
+            re.IGNORECASE,
+        )
+        device_id = (
+            str(cred.get("device_id") or "").strip()
+            or (cookie_device.group(1).strip() if cookie_device else "")
+            or str(uuid.uuid5(
+                uuid.NAMESPACE_DNS,
+                f"dango-check-plus:{email}",
+            ))
+        )
+        jobs.append((
+            email,
+            access_token,
+            account_id,
+            device_id,
+            cookie_header,
+        ))
+
+    def check_job(job):
+        email, access_token, account_id, device_id, cookie_header = job
+        note = ""
+        try:
+            sess = create_http_session(
+                proxy=proxy or None,
+                impersonate="chrome110",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return email, {"status": "error", "label": "创建会话失败"}, str(exc)
+        try:
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "User-Agent": ua,
+                "Origin": "https://chatgpt.com",
+                "Referer": "https://chatgpt.com/",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "OAI-Device-Id": device_id,
+            }
+            if account_id:
+                headers["ChatGPT-Account-ID"] = account_id
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+            try:
+                resp = sess.get(url, headers=headers, timeout=15)
+            except Exception as exc:  # noqa: BLE001
+                message = str(exc)
+                if proxy and (
+                    "(97)" in message
+                    or "rejected by the SOCKS5" in message
+                ):
+                    note = "代理认证被拒（SOCKS5 97），请检查代理账号密码或配额"
+                elif proxy and "(7)" in message:
+                    note = "代理连接失败（curl 7），请检查地址和端口"
+                elif proxy:
+                    note = f"代理请求失败: {type(exc).__name__}"
+                return email, {"status": "error", "label": "网络失败"}, note
+
+            if resp.status_code in (401, 403):
+                body = _body_text(resp)
+                if _looks_deactivated(body):
+                    return email, {"status": "banned", "label": "封号"}, ""
+                if resp.status_code == 401:
+                    return email, {
+                        "status": "token_invalid",
+                        "label": "凭证失效",
+                    }, ""
+                return email, {
+                    "status": "error",
+                    "label": "HTTP 403",
+                }, ""
+            if resp.status_code != 200:
+                return email, {
+                    "status": "error",
+                    "label": f"HTTP {resp.status_code}",
+                }, ""
+            try:
+                payload = resp.json()
+            except Exception:  # noqa: BLE001
+                return email, {
+                    "status": "error",
+                    "label": "响应非 JSON",
+                }, ""
+            return email, _classify_plus_payload(payload), ""
+        finally:
+            try:
+                sess.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    notes = []
+    if jobs:
+        workers = min(6, max(1, len(jobs)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for email, info, note in pool.map(check_job, jobs):
+                results[email] = info
+                if note:
+                    notes.append(note)
+                    log.warning(f"[check_plus] {email}: {note}")
+
+    checked_at = time.time()
+    for email, info in results.items():
+        if info["status"] not in {"not_found", "no_at", "error"}:
+            db.update_plus_check(
+                email,
+                {**info, "checked_at": checked_at},
+            )
+    return {
+        "ok": True,
+        "results": results,
+        "note": "；".join(dict.fromkeys(notes)),
+        "workers": min(6, max(1, len(jobs))),
+    }
 
 
 # ──────────────────────── auto-loop ────────────────────────
