@@ -178,6 +178,7 @@ async function run() {
       want_refresh_token: true,
       want_2fa: form.value.want2fa,
       want_password: form.value.wantPassword,
+      registration_password: form.value.registrationPassword,
       browser_fallback: form.value.browserFallback,
     })
     runtime.addLog(`[client] 启动注册 run_id=${r.run_id} email=${r.email}`, 'evt')
@@ -298,9 +299,17 @@ async function runRecovery() {
                 <span>注册时设置密码</span>
               </div>
               <div class="hint" style="margin-top: 6px; line-height: 1.5">
-                默认关。不设密码时走 <b>passwordless 注册</b>（邮箱 OTP 验证），
-                账号以后只能靠邮箱收码登录 —— 临时邮箱域名失效后可能无法找回。
+                默认开启，统一密码为 <b>qweasd123</b>。只有手动关闭时才走
+                <b>passwordless 注册</b>，届时账号只能靠邮箱收码登录。
               </div>
+              <el-input
+                v-if="form.wantPassword"
+                v-model="form.registrationPassword"
+                type="password"
+                show-password
+                placeholder="qweasd123"
+                style="max-width: 360px; margin-top: 10px"
+              />
               <div style="display: flex; align-items: center; gap: 10px; margin-top: 12px">
                 <el-switch v-model="form.want2fa" />
                 <span>注册成功后自动绑定 2FA（TOTP）</span>

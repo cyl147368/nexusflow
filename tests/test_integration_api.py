@@ -37,6 +37,8 @@ class IntegrationApiTest(unittest.TestCase):
         config = response.json()["config"]
         self.assertEqual(config["mailhub_token"], "***")
         self.assertEqual(config["icloud_token"], "***")
+        self.assertTrue(config["want_password"])
+        self.assertEqual(config["registration_password"], "")
 
     def test_config_can_be_saved_without_overwriting_secrets(self):
         response = self.client.post(
@@ -53,6 +55,13 @@ class IntegrationApiTest(unittest.TestCase):
         config = response.json()["config"]
         self.assertEqual(config["icloud_account_id"], "acc_test")
         self.assertEqual(config["mailhub_token"], "***")
+
+        update = self.client.post(
+            "/api/integration/config",
+            json={"registration_password": "qweasd123"},
+        )
+        self.assertEqual(update.status_code, 200)
+        self.assertEqual(update.json()["config"]["registration_password"], "***")
 
     def test_continuous_config_preserves_zero_values(self):
         response = self.client.post(

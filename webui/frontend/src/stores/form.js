@@ -3,7 +3,7 @@ import { reactive, watch } from 'vue'
 
 // v3: 密码 / 2FA 默认值改为关闭。旧 key 里记着 want2fa=true，加载时会覆盖
 // 新默认值，所以升版本一次性丢弃旧记忆（代理等回到默认，需要重填一次）。
-const KEY = 'gpt_outlook_register_form_v3'
+const KEY = 'gpt_outlook_register_form_v4'
 
 // 跨页面共享 + localStorage 持久化的表单字段
 // （proxy 在 注册 / 自动跑号 / Plus 检测 三处共用）
@@ -13,11 +13,13 @@ const defaults = {
   autoConcurrency: 1,
   autoCoolDown: 3,
   autoTargetCount: 0,
-  // 密码 / 2FA 都**默认关闭**（2026-11 主人要求）。
+  // 注册必须设置密码，默认使用统一密码；2FA 仍由显式开关控制。
   // 仍然拆成单次/批量两组：单次页是试验台，批量页动辄几百个号，
   // 两边临时改动互不影响。localStorage 只记住上次选择，不改变默认值。
-  wantPassword: false,
-  autoWantPassword: false,
+  wantPassword: true,
+  autoWantPassword: true,
+  registrationPassword: 'qweasd123',
+  autoRegistrationPassword: 'qweasd123',
   want2fa: false,
   autoWant2fa: false,
   browserFallback: true,

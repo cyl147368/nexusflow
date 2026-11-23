@@ -1616,6 +1616,12 @@ def get_integration_config() -> dict:
         "want_session_token": get_setting("nx_want_session_token", "1") in ("1", "true"),
         "want_refresh_token": get_setting("nx_want_refresh_token", "1") in ("1", "true"),
         "want_2fa": get_setting("nx_want_2fa", "0") in ("1", "true"),
+        "want_password": get_setting("nx_want_password", "1") in ("1", "true"),
+        "registration_password": (
+            "***"
+            if get_setting("nx_registration_password")
+            else ""
+        ),
         "browser_fallback": get_setting("nx_browser_fallback", "1") in ("1", "true"),
         "continuous": get_setting("nx_continuous", "1") in ("1", "true"),
         "target_count": int(get_setting("nx_target_count", "0") or 0),
@@ -1654,11 +1660,18 @@ def get_integration_internal_config() -> dict:
         "want_session_token",
         "want_refresh_token",
         "want_2fa",
+        "want_password",
         "browser_fallback",
     ):
-        cfg[key] = get_setting(f"nx_{key}", "0" if key == "want_2fa" else "1") in (
+        default = "1" if key in {"want_password", "browser_fallback"} else (
+            "0" if key == "want_2fa" else "1"
+        )
+        cfg[key] = get_setting(f"nx_{key}", default) in (
             "1", "true", "yes", "on",
         )
+    cfg["registration_password"] = (
+        get_setting("nx_registration_password") or "qweasd123"
+    )
     cfg["continuous"] = get_setting("nx_continuous", "1") in (
         "1", "true", "yes", "on",
     )
@@ -1693,6 +1706,7 @@ def save_integration_config(data: dict) -> None:
         set_setting("nx_imap_ssl", "1" if enabled else "0")
     for key in (
         "want_access_token", "want_session_token", "want_refresh_token", "want_2fa",
+        "want_password",
         "browser_fallback",
         "continuous", "auto_qualify",
     ):
@@ -1702,6 +1716,8 @@ def save_integration_config(data: dict) -> None:
                 "1", "true", "yes", "on",
             )
             set_setting(f"nx_{key}", "1" if enabled else "0")
+    if data.get("registration_password") and data["registration_password"] != "***":
+        set_setting("nx_registration_password", str(data["registration_password"]).strip())
 
 
 # ──────────────────────── SMS 接码配置 ────────────────────────

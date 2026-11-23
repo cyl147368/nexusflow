@@ -71,6 +71,8 @@ const form = ref({
   want_session_token: true,
   want_refresh_token: true,
   want_2fa: false,
+  want_password: true,
+  registration_password: 'qweasd123',
   browser_fallback: true,
   continuous: true,
   target_count: 0,
@@ -820,8 +822,21 @@ onDeactivated(stopPolling)
             <el-checkbox v-model="form.want_session_token">Session Token</el-checkbox>
             <el-checkbox v-model="form.want_refresh_token">Refresh Token</el-checkbox>
             <el-checkbox v-model="form.want_2fa">注册后绑定 2FA</el-checkbox>
+            <el-checkbox v-model="form.want_password">注册设置密码</el-checkbox>
             <el-checkbox v-model="form.browser_fallback">风控混合回退</el-checkbox>
           </div>
+          <el-form-item v-if="form.want_password" label="统一注册密码">
+            <el-input
+              v-model="form.registration_password"
+              type="password"
+              show-password
+              placeholder="留空时默认 qweasd123"
+              style="max-width: 360px"
+            />
+            <div class="hint">
+              要求注册时成功设置密码；若 OpenAI 拒绝设置密码，本轮会失败而不是生成无密码账号。
+            </div>
+          </el-form-item>
         </el-form>
         <el-alert
           type="info" :closable="false" show-icon class="single-run-tip"

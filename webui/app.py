@@ -137,9 +137,9 @@ class RegisterReq(BaseModel):
     # 注册成功后自动绑定 TOTP 2FA。前端两个页面都**默认关**（与密码开关一致）。
     # 这里的 default 保持 False：漏传字段时保守不绑（绑定不可逆）。
     want_2fa: bool = False
-    # 注册时设置密码。默认 False = 不设密码，走 passwordless 注册（邮箱 OTP）。
-    # 关闭后 2FA 慢路径（需密码重登）会跳过，快路径（access_token）仍可用。
-    want_password: bool = False
+    # 注册默认设置密码，统一密码为 qweasd123；关闭时明确走 passwordless。
+    want_password: bool = True
+    registration_password: str = "qweasd123"
     # 纯协议遇到 CF/Sentinel/409 时，用 Camoufox/Cloak/Playwright 只补关键步骤。
     browser_fallback: bool = True
 
@@ -464,6 +464,7 @@ def api_register(req: RegisterReq):
         "want_2fa": req.want_2fa,
         "workflow_scope": workflow_scope,
         "want_password": req.want_password,
+        "registration_password": req.registration_password,
         "browser_fallback": req.browser_fallback,
     }
     run_id = registrar.start_registration(account, options)
@@ -1768,8 +1769,9 @@ class AutoLoopStartReq(BaseModel):
     # 批量页开关**默认关**（与单次页一致）。
     # default 保持 False：漏传字段时宁可不绑，也不替调用方做不可逆决定。
     want_2fa: bool = False
-    # 注册时设置密码，默认 False = 无密码（passwordless 注册）。
-    want_password: bool = False
+    # 注册时设置密码，默认 true；密码为空时使用 qweasd123。
+    want_password: bool = True
+    registration_password: str = "qweasd123"
     browser_fallback: bool = True
 
 
@@ -1869,6 +1871,8 @@ class IntegrationConfigReq(BaseModel):
     want_session_token: Optional[bool] = None
     want_refresh_token: Optional[bool] = None
     want_2fa: Optional[bool] = None
+    want_password: Optional[bool] = None
+    registration_password: Optional[str] = None
     browser_fallback: Optional[bool] = None
     continuous: Optional[bool] = None
     target_count: Optional[int] = None

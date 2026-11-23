@@ -37,6 +37,46 @@ class _Session:
 
 
 class AuthFlowDeviceTest(unittest.TestCase):
+    def test_password_registration_is_enabled_with_unified_default_password(self):
+        class PasswordSession:
+            def __init__(self):
+                self.posted = {}
+
+            def get(self, url, **kwargs):
+                del url, kwargs
+                return _Response()
+
+            def post(self, url, **kwargs):
+                self.posted = {"url": url, **kwargs}
+                return _Response()
+
+        saved = []
+        flow = AuthFlow(
+            Config(),
+            env_overrides={
+                "REGISTER_SET_PASSWORD": "1",
+                "REGISTER_PASSWORD": "qweasd123",
+            },
+            on_password=lambda email, password: saved.append((email, password)),
+        )
+        flow.session = PasswordSession()
+        flow.result.device_id = "device-id"
+        with (
+            patch.object(flow, "_auth_json_headers", return_value={}),
+            patch.object(flow, "_sentinel_fp_kwargs", return_value={}),
+            patch.object(flow, "_new_document_navigation"),
+            patch.object(flow, "_trace_http"),
+            patch("sentinel.get_sentinel_token", return_value=("token", "so")),
+        ):
+            self.assertTrue(flow.register_password("new@example.com"))
+
+        self.assertEqual(flow.result.password, "qweasd123")
+        self.assertEqual(
+            flow.session.posted["json"],
+            {"password": "qweasd123", "username": "new@example.com"},
+        )
+        self.assertEqual(saved, [("new@example.com", "qweasd123")])
+
     def test_auth_url_reuses_warmup_device_id(self):
         flow = AuthFlow(Config())
         flow.session = _Session()

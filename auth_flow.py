@@ -725,11 +725,10 @@ class AuthFlow:
     def _should_set_password(self) -> bool:
         """本次注册是否设置密码（POST user/register）。
 
-        默认**关闭**：不设密码时服务端走 passwordless 注册（邮箱 OTP），
-        与 want_2fa 一样由调用方（WebUI 开关 / CLI 环境变量）显式开启。
-        CLI 老用户想保持旧行为：设 REGISTER_SET_PASSWORD=1。
+        默认开启，确保新账号可密码登录。确实需要 passwordless 注册时，
+        WebUI 可关闭“注册时设置密码”，或显式设置 REGISTER_SET_PASSWORD=0。
         """
-        return self._env_flag("REGISTER_SET_PASSWORD", "0")
+        return self._env_flag("REGISTER_SET_PASSWORD", "1")
 
     def _warm_create_account_password_page(self) -> None:
         """无密码注册前先 GET create-account/password 建立服务端状态。
@@ -2759,7 +2758,12 @@ class AuthFlow:
     # ── Step 6.5: 注册密码 ──
     def register_password(self, email: str) -> bool:
         logger.info("[5.5/10] 注册密码...")
-        password = self._random_password()
+        password = (
+            (self._get_env("REGISTER_PASSWORD", "") or "").strip()
+            or self._random_password()
+        )
+        if len(password) < 8:
+            raise RuntimeError("REGISTER_PASSWORD 至少需要 8 位")
         self.result.password = password
 
         # 先访问 create-account/password 页面（HAR 确认需要此步建立服务端状态）
@@ -4120,6 +4124,13 @@ class AuthFlow:
             password_registered = False
             if set_password:
                 password_registered = self.register_password(email)
+                if not password_registered and self._env_flag(
+                    "REGISTER_REQUIRE_PASSWORD", "1"
+                ):
+                    raise RuntimeError(
+                        "本次要求注册密码，但 OpenAI 拒绝 POST user/register；"
+                        "为免生成无密码账号，本轮不继续创建账户"
+                    )
 
             if password_registered:
                 # ⚠️ POST user/register 成功后服务端**切换流程**到 email_otp_send 页
