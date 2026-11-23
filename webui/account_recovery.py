@@ -165,7 +165,12 @@ def _recover_account_login_first(
                 has_existing_password=True,
             )
         else:
-            password_response = flow.add_password_via_reauth(email, new_password)
+            password_response = flow.add_password_via_reauth(
+                email,
+                new_password,
+                mail_provider=mail,
+                otp_timeout=otp_timeout,
+            )
         password_ok = True
         data["password"] = new_password
         data["password_status"] = password_response.get("mode") or "reset"

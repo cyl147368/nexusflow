@@ -2919,7 +2919,14 @@ class AuthFlow:
             ),
         }
 
-    def add_password_via_reauth(self, email: str, password: str) -> dict:
+    def add_password_via_reauth(
+        self,
+        email: str,
+        password: str,
+        *,
+        mail_provider: Optional[MailProvider] = None,
+        otp_timeout: int = 180,
+    ) -> dict:
         """Start ChatGPT's password re-auth flow and attach a password.
 
         Current ChatGPT web uses a dedicated auth start:
@@ -2991,6 +2998,26 @@ class AuthFlow:
             self._authorize_landing_url
             or "https://auth.openai.com/create-account/password"
         )
+        if "/email-verification" in referer.lower():
+            if mail_provider is None:
+                raise RuntimeError("补设密码的 reauth 流程要求邮箱 OTP，但未提供邮箱 provider")
+            otp_sent_at = time.time()
+            sent = self.kickoff_otp_delivery("password_reauth")
+            if not sent:
+                self.send_otp(referer="https://auth.openai.com/email-verification")
+            otp_code = mail_provider.wait_for_otp(
+                email,
+                timeout=max(30, int(otp_timeout or 180)),
+                issued_after=otp_sent_at,
+            )
+            step = self._complete_mfa_if_needed(self.verify_otp(otp_code), email)
+            next_url = self._normalize_continue_url(
+                self._extract_continue_url_from_step(step)
+            )
+            page_type = (self._extract_page_type(step) or "").lower()
+            if page_type == "about_you" or "/about-you" in (next_url or ""):
+                next_url = self.create_account()
+            referer = next_url or self._authorize_landing_url or referer
         logger.info("补设密码 reauth 落地: %s", referer[:180])
         return self.set_or_reset_password(
             email,
