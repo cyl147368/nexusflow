@@ -551,19 +551,64 @@ class AuthFlow:
         msg = str(exc).lower()
         return "registration_disallowed" in msg
 
-    def _get_cookie_value_by_name(self, name: str) -> str:
-        """按 cookie 名称获取值（忽略 domain 冲突）。"""
+    def _get_cookie_value_by_name(
+        self,
+        name: str,
+        domain_contains: str = "",
+    ) -> str:
+        """Read a cookie while disambiguating same-name cross-domain cookies."""
+        target = (name or "").strip().lower()
+        domain_hint = (domain_contains or "").strip().lower()
+        if not target:
+            return ""
+        fallback = ""
+        jar = None
         try:
             jar = getattr(self.session.cookies, "jar", None)
-            if jar is None:
-                return ""
-            target = (name or "").strip().lower()
-            for c in jar:
-                if (getattr(c, "name", "") or "").strip().lower() == target:
-                    return (getattr(c, "value", "") or "").strip()
+            if jar is not None:
+                for c in jar:
+                    cookie_name = (getattr(c, "name", "") or "").strip().lower()
+                    if cookie_name != target:
+                        continue
+                    value = (getattr(c, "value", "") or "").strip()
+                    if not value:
+                        continue
+                    cookie_domain = (
+                        getattr(c, "domain", "") or ""
+                    ).strip().lower()
+                    if not domain_hint or domain_hint in cookie_domain:
+                        return value
+                    fallback = fallback or value
         except Exception:
             pass
-        return ""
+        if jar is None:
+            try:
+                for c in self.session.cookies:
+                    if (getattr(c, "name", "") or "").strip().lower() != target:
+                        continue
+                    value = (getattr(c, "value", "") or "").strip()
+                    if not value:
+                        continue
+                    cookie_domain = (getattr(c, "domain", "") or "").strip().lower()
+                    if not domain_hint or domain_hint in cookie_domain:
+                        return value
+                    fallback = fallback or value
+            except Exception:
+                pass
+        if fallback:
+            return fallback
+        if domain_hint:
+            try:
+                return (
+                    self.session.cookies.get(name, "", domain=f".{domain_hint}")
+                    or ""
+                ).strip()
+            except Exception:
+                pass
+        try:
+            return (self.session.cookies.get(name, "") or "").strip()
+        except Exception:
+            return ""
 
     def _extract_login_challenge_from_cookie(self) -> str:
         """
@@ -1960,23 +2005,12 @@ class AuthFlow:
         resp = self.session.get(auth_url, headers=headers, timeout=30, allow_redirects=True)
         self._trace_http("auth_oauth_init", resp)
 
-        # 从 cookie 获取 oai-did
-        device_id = ""
-        for cookie in self.session.cookies:
-            if hasattr(cookie, "name"):
-                if cookie.name == "oai-did":
-                    device_id = cookie.value
-                    break
-            elif isinstance(cookie, str) and cookie == "oai-did":
-                device_id = self.session.cookies.get("oai-did", "")
-                break
-
-        # curl_cffi cookies 访问方式
-        if not device_id:
-            try:
-                device_id = self.session.cookies.get("oai-did", "")
-            except Exception:
-                pass
+        # oai-did can exist on both .chatgpt.com and .openai.com. Prefer the
+        # chatgpt.com value; an unscoped cookies.get() raises ambiguity.
+        device_id = self._get_cookie_value_by_name(
+            "oai-did",
+            domain_contains="chatgpt.com",
+        )
 
         # fallback: 从 HTML 提取
         if not device_id:

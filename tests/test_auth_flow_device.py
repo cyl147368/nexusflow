@@ -50,6 +50,38 @@ class AuthFlowDeviceTest(unittest.TestCase):
         self.assertEqual(flow.result.device_id, "cookie-device-id")
         self.assertIn("ext-oai-did=cookie-device-id", flow.session.signin_url)
 
+    def test_oauth_init_prefers_chatgpt_cookie_when_oai_did_is_duplicated(self):
+        class DuplicateCookies:
+            def __iter__(self):
+                return iter(["oai-did"])
+
+            def get(self, name, default="", domain=""):
+                if name == "oai-did" and domain == ".chatgpt.com":
+                    return "chatgpt-device-id"
+                if name == "oai-did":
+                    raise RuntimeError(
+                        "Multiple cookies exist with name=oai-did"
+                    )
+                return default
+
+        class Session:
+            cookies = DuplicateCookies()
+
+            @staticmethod
+            def get(url, **kwargs):
+                del url, kwargs
+                return _Response()
+
+        flow = AuthFlow(Config())
+        flow.session = Session()
+        with (
+            patch.object(flow, "_navigation_headers", return_value={}),
+            patch.object(flow, "_trace_http"),
+        ):
+            device_id = flow.auth_oauth_init("https://auth.test/authorize")
+
+        self.assertEqual(device_id, "chatgpt-device-id")
+
     def test_password_reset_uses_native_email_otp_endpoints(self):
         class ResetSession:
             def __init__(self):
