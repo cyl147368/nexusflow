@@ -354,6 +354,69 @@ class AuthFlowDeviceTest(unittest.TestCase):
 
         create_account.assert_called_once_with()
 
+    def test_add_password_uses_password_reauth_state(self):
+        class ReauthSession:
+            def __init__(self):
+                self.start_url = ""
+                self.form = {}
+
+            def post(self, url, **kwargs):
+                self.start_url = url
+                self.form = kwargs.get("data", {})
+                return type(
+                    "Response",
+                    (),
+                    {
+                        "status_code": 200,
+                        "headers": {},
+                        "text": "",
+                        "raise_for_status": lambda self: None,
+                        "json": lambda self: {
+                            "url": "https://auth.openai.com/oauth/authorize?state=x"
+                        },
+                    },
+                )()
+
+        flow = AuthFlow(Config())
+        flow.result.session_token = "session-token"
+        flow.result.device_id = "device-id"
+        flow.session = ReauthSession()
+        completed = {"ok": True, "mode": "add"}
+        with (
+            patch.object(flow, "get_csrf_token", return_value="csrf-token"),
+            patch.object(flow, "_remember_oauth_params"),
+            patch.object(flow, "_trace_http"),
+            patch.object(
+                flow,
+                "auth_oauth_init",
+                side_effect=lambda _url: setattr(
+                    flow,
+                    "_authorize_landing_url",
+                    "https://auth.openai.com/create-account/password",
+                ) or "device-id",
+            ),
+            patch.object(
+                flow,
+                "set_or_reset_password",
+                return_value=completed,
+            ) as set_password,
+        ):
+            result = flow.add_password_via_reauth(
+                "alias@example.com",
+                "qweasd123456",
+            )
+
+        self.assertEqual(result, completed)
+        self.assertIn("post_login_add_password=true", flow.session.start_url)
+        self.assertIn("reauth=password", flow.session.start_url)
+        self.assertEqual(flow.session.form["csrfToken"], "csrf-token")
+        set_password.assert_called_once_with(
+            "alias@example.com",
+            "qweasd123456",
+            has_existing_password=False,
+            referer="https://auth.openai.com/create-account/password",
+        )
+
     def test_authorize_state_is_refreshed_after_sentinel(self):
         flow = AuthFlow(Config())
         with (

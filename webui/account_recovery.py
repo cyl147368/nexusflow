@@ -149,19 +149,25 @@ def _recover_account_login_first(
     new_password = str(options.get("new_password") or "").strip()
     if not new_password:
         new_password = AuthFlow._random_password()
-    data["password"] = new_password
+    # Do not persist a password until OpenAI confirms password/add; otherwise
+    # the UI would claim an empty-password account was repaired when it was not.
+    data["password"] = previous.get("password") or ""
 
     errors: list[str] = []
     password_ok = False
     emit_phase("resetting_password", {"email": email})
     emit_log("登录成功，正在设置新密码")
     try:
-        password_response = flow.set_or_reset_password(
-            email,
-            new_password,
-            has_existing_password=bool(flow.password_login_required),
-        )
+        if flow.password_login_required:
+            password_response = flow.set_or_reset_password(
+                email,
+                new_password,
+                has_existing_password=True,
+            )
+        else:
+            password_response = flow.add_password_via_reauth(email, new_password)
         password_ok = True
+        data["password"] = new_password
         data["password_status"] = password_response.get("mode") or "reset"
         emit_log(
             "已重置账号密码"

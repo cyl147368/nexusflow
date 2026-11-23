@@ -2852,6 +2852,7 @@ class AuthFlow:
         password: str,
         *,
         has_existing_password: Optional[bool] = None,
+        referer: str = "https://auth.openai.com/reset-password/new-password",
     ) -> dict:
         """Set or reset the account password through the authenticated web flow."""
         email = (email or "").strip().lower()
@@ -2885,9 +2886,7 @@ class AuthFlow:
             if has_existing_password
             else "https://auth.openai.com/api/accounts/password/add"
         )
-        headers = self._common_headers(
-            "https://auth.openai.com/reset-password/new-password"
-        )
+        headers = self._common_headers(referer)
         headers["Content-Type"] = "application/json"
         if self._last_sentinel_token:
             headers["openai-sentinel-token"] = self._last_sentinel_token
@@ -2919,6 +2918,86 @@ class AuthFlow:
                 self._extract_continue_url_from_step(response)
             ),
         }
+
+    def add_password_via_reauth(self, email: str, password: str) -> dict:
+        """Start ChatGPT's password re-auth flow and attach a password.
+
+        Current ChatGPT web uses a dedicated auth start:
+        ``connection=password&reauth=password&max_age=0`` plus
+        ``post_login_add_password=true``. Calling password/add directly from
+        an old session returns invalid_auth_step.
+        """
+        email = (email or "").strip().lower()
+        password = (password or "").strip()
+        if not email or not password:
+            raise RuntimeError("补设密码需要 email 和 password")
+        if len(password) < 12:
+            raise RuntimeError("补设密码失败：OpenAI 当前要求密码至少 12 位")
+        if not self.result.session_token:
+            self.result.session_token = self._get_cookie_value_by_name(
+                "__Secure-next-auth.session-token",
+                domain_contains="chatgpt.com",
+            )
+        if not self.result.session_token and not self.result.access_token:
+            raise RuntimeError("补设密码需要先取得有效 ChatGPT 登录态")
+
+        csrf = self.get_csrf_token()
+        query = urlencode(
+            {
+                "connection": "password",
+                "login_hint": email,
+                "reauth": "password",
+                "max_age": "0",
+                "post_login_add_password": "true",
+            }
+        )
+        headers = self._common_headers("https://chatgpt.com/")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        response = self.session.post(
+            f"https://chatgpt.com/api/auth/signin/openai?{query}",
+            headers=headers,
+            data={
+                "callbackUrl": "https://chatgpt.com/",
+                "csrfToken": csrf,
+                "json": "true",
+            },
+            timeout=30,
+        )
+        self._trace_http("password_reauth_signin", response)
+        response.raise_for_status()
+        auth_url = str((response.json() or {}).get("url") or "").strip()
+        if not auth_url:
+            raise RuntimeError("补设密码认证流程未返回 authorize URL")
+        self._remember_oauth_params(auth_url)
+
+        warmup_device = self._get_cookie_value_by_name(
+            "oai-did", domain_contains="chatgpt.com"
+        )
+        if not warmup_device:
+            warmup_device = self.result.device_id
+        try:
+            device_id = self.auth_oauth_init(auth_url) or warmup_device
+        except CloudflareChallengeError:
+            if not self._recover_auth_with_browser(
+                auth_url,
+                email,
+                intent="login",
+                reason="password_reauth_cloudflare",
+            ):
+                raise
+            device_id = self.result.device_id or warmup_device
+        self.result.device_id = device_id or self.result.device_id
+        referer = (
+            self._authorize_landing_url
+            or "https://auth.openai.com/create-account/password"
+        )
+        logger.info("补设密码 reauth 落地: %s", referer[:180])
+        return self.set_or_reset_password(
+            email,
+            password,
+            has_existing_password=False,
+            referer=referer,
+        )
 
     def send_otp(self, referer: str = "https://auth.openai.com/create-account/password"):
         logger.info(f"[6/10] 发送 OTP (referer={referer.split('/')[-1]})...")
