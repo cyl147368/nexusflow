@@ -18,8 +18,8 @@ const defaults = {
   // 两边临时改动互不影响。localStorage 只记住上次选择，不改变默认值。
   wantPassword: true,
   autoWantPassword: true,
-  registrationPassword: 'qweasd123',
-  autoRegistrationPassword: 'qweasd123',
+  registrationPassword: 'qweasd123456',
+  autoRegistrationPassword: 'qweasd123456',
   want2fa: false,
   autoWant2fa: false,
   browserFallback: true,

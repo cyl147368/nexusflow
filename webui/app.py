@@ -137,9 +137,9 @@ class RegisterReq(BaseModel):
     # 注册成功后自动绑定 TOTP 2FA。前端两个页面都**默认关**（与密码开关一致）。
     # 这里的 default 保持 False：漏传字段时保守不绑（绑定不可逆）。
     want_2fa: bool = False
-    # 注册默认设置密码，统一密码为 qweasd123；关闭时明确走 passwordless。
+    # 注册默认设置密码，统一密码为 qweasd123456；关闭时明确走 passwordless。
     want_password: bool = True
-    registration_password: str = "qweasd123"
+    registration_password: str = "qweasd123456"
     # 纯协议遇到 CF/Sentinel/409 时，用 Camoufox/Cloak/Playwright 只补关键步骤。
     browser_fallback: bool = True
 
@@ -164,7 +164,7 @@ class RecoveryBatchReq(BaseModel):
     proxy: str = ""
     otp_timeout: int = 180
     want_2fa: bool = True
-    new_password: str = "qweasd123"
+    new_password: str = "qweasd123456"
     workflow_scope: str = "legacy"
     cool_down_seconds: int = 10
     rotate_proxy: bool = False
@@ -174,7 +174,7 @@ class ICloudRecoveryScanReq(BaseModel):
     proxy: str = ""
     otp_timeout: int = 180
     want_2fa: bool = True
-    new_password: str = "qweasd123"
+    new_password: str = "qweasd123456"
     cool_down_seconds: int = 10
     rotate_proxy: bool = True
 
@@ -1769,9 +1769,9 @@ class AutoLoopStartReq(BaseModel):
     # 批量页开关**默认关**（与单次页一致）。
     # default 保持 False：漏传字段时宁可不绑，也不替调用方做不可逆决定。
     want_2fa: bool = False
-    # 注册时设置密码，默认 true；密码为空时使用 qweasd123。
+    # 注册时设置密码，默认 true；密码为空时使用 qweasd123456。
     want_password: bool = True
-    registration_password: str = "qweasd123"
+    registration_password: str = "qweasd123456"
     browser_fallback: bool = True
 
 

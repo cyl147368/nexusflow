@@ -55,7 +55,7 @@ class AuthFlowDeviceTest(unittest.TestCase):
             Config(),
             env_overrides={
                 "REGISTER_SET_PASSWORD": "1",
-                "REGISTER_PASSWORD": "qweasd123",
+                "REGISTER_PASSWORD": "qweasd123456",
             },
             on_password=lambda email, password: saved.append((email, password)),
         )
@@ -70,12 +70,12 @@ class AuthFlowDeviceTest(unittest.TestCase):
         ):
             self.assertTrue(flow.register_password("new@example.com"))
 
-        self.assertEqual(flow.result.password, "qweasd123")
+        self.assertEqual(flow.result.password, "qweasd123456")
         self.assertEqual(
             flow.session.posted["json"],
-            {"password": "qweasd123", "username": "new@example.com"},
+            {"password": "qweasd123456", "username": "new@example.com"},
         )
-        self.assertEqual(saved, [("new@example.com", "qweasd123")])
+        self.assertEqual(saved, [("new@example.com", "qweasd123456")])
 
     def test_auth_url_reuses_warmup_device_id(self):
         flow = AuthFlow(Config())
@@ -168,7 +168,7 @@ class AuthFlowDeviceTest(unittest.TestCase):
             result = flow.reset_password_with_email_otp(
                 mail,
                 "recover@example.com",
-                "qweasd123",
+                "qweasd123456",
                 timeout=30,
             )
 

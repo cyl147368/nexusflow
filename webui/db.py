@@ -1670,7 +1670,7 @@ def get_integration_internal_config() -> dict:
             "1", "true", "yes", "on",
         )
     cfg["registration_password"] = (
-        get_setting("nx_registration_password") or "qweasd123"
+        get_setting("nx_registration_password") or "qweasd123456"
     )
     cfg["continuous"] = get_setting("nx_continuous", "1") in (
         "1", "true", "yes", "on",

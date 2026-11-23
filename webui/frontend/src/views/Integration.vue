@@ -72,7 +72,7 @@ const form = ref({
   want_refresh_token: true,
   want_2fa: false,
   want_password: true,
-  registration_password: 'qweasd123',
+  registration_password: 'qweasd123456',
   browser_fallback: true,
   continuous: true,
   target_count: 0,
@@ -830,7 +830,7 @@ onDeactivated(stopPolling)
               v-model="form.registration_password"
               type="password"
               show-password
-              placeholder="留空时默认 qweasd123"
+              placeholder="至少 12 位，留空时默认 qweasd123456"
               style="max-width: 360px"
             />
             <div class="hint">

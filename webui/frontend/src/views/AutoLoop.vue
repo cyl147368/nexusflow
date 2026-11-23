@@ -94,7 +94,7 @@ async function call(fn, name) {
           <span>注册时设置密码</span>
         </div>
         <div class="hint" style="margin-top: 6px; line-height: 1.5">
-          默认开启，统一密码为 <b>qweasd123</b>。只有手动关闭时才走
+          默认开启，统一密码为 <b>qweasd123456</b>。只有手动关闭时才走
           <b>passwordless 注册</b>，届时账号只能靠邮箱收码登录。
         </div>
         <el-input
@@ -102,7 +102,7 @@ async function call(fn, name) {
           v-model="form.autoRegistrationPassword"
           type="password"
           show-password
-          placeholder="qweasd123"
+          placeholder="至少 12 位，默认 qweasd123456"
           style="max-width: 360px; margin-top: 10px"
         />
         <div style="display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap">

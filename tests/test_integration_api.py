@@ -58,7 +58,7 @@ class IntegrationApiTest(unittest.TestCase):
 
         update = self.client.post(
             "/api/integration/config",
-            json={"registration_password": "qweasd123"},
+            json={"registration_password": "qweasd123456"},
         )
         self.assertEqual(update.status_code, 200)
         self.assertEqual(update.json()["config"]["registration_password"], "***")

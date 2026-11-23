@@ -192,7 +192,7 @@ def _do_register(
         otp_timeout: int
         allow_existing_login: bool
         want_password: bool   # 默认 True = 注册时设置密码
-        registration_password: str  # 默认 qweasd123
+        registration_password: str  # 默认 qweasd123456
         want_2fa: bool        # 默认 False = 不绑 TOTP
         browser_fallback: bool
     """
@@ -234,7 +234,7 @@ def _do_register(
         # 单号 WebUI 场景下 fast-fail 没意义（批量跑才需要"跳过被识别的号"），故强制 ON。
         env_overrides["WEBUI_ALLOW_LOGIN"] = "1"
         env_overrides["OTP_TIMEOUT"] = str(int(options.get("otp_timeout") or 180))
-        # 注册密码默认开启。password 为空时也回落到 qweasd123，确保新号可密码登录。
+        # 注册密码默认开启。password 为空时也回落到 qweasd123456，确保新号可密码登录。
         env_overrides["REGISTER_SET_PASSWORD"] = (
             "1" if options.get("want_password", True) else "0"
         )
@@ -242,7 +242,7 @@ def _do_register(
             "1" if options.get("want_password", True) else "0"
         )
         env_overrides["REGISTER_PASSWORD"] = str(
-            options.get("registration_password") or "qweasd123"
+            options.get("registration_password") or "qweasd123456"
         ).strip()
         env_overrides["BROWSER_FALLBACK_ENABLED"] = (
             "1" if options.get("browser_fallback", True) else "0"

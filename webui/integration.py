@@ -1242,7 +1242,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             "allow_existing_login": True,
             "want_2fa": cfg["want_2fa"],
             "want_password": cfg.get("want_password", True),
-            "registration_password": cfg.get("registration_password", "qweasd123"),
+            "registration_password": cfg.get("registration_password", "qweasd123456"),
             "browser_fallback": cfg.get("browser_fallback", True),
             "workflow_scope": "integration",
         })

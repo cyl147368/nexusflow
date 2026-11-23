@@ -109,7 +109,7 @@ App 专用密码用于读取 iCloud 收件箱。Cookie 用于管理 Hide My Emai
 配置代理、OTP 超时、需要保存的 Token，以及是否注册后绑定 TOTP 2FA。
 然后点击“一键启动完整流程”。
 
-注册默认会设置密码，一体化流程的默认统一密码为 `qweasd123`。
+注册默认会设置密码，一体化流程的默认统一密码为 `qweasd123456`（OpenAI 当前最低要求 12 位）。
 若 OpenAI 拒绝 `POST /api/accounts/user/register`，当前轮会明确失败并自动换号，
 不会继续创建一个密码字段为空的新账号。需要显式使用 passwordless 注册时，
 可在对应页面关闭“注册设置密码”，或在环境变量中设置：

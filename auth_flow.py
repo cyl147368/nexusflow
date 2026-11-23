@@ -2762,8 +2762,8 @@ class AuthFlow:
             (self._get_env("REGISTER_PASSWORD", "") or "").strip()
             or self._random_password()
         )
-        if len(password) < 8:
-            raise RuntimeError("REGISTER_PASSWORD 至少需要 8 位")
+        if len(password) < 12:
+            raise RuntimeError("REGISTER_PASSWORD 至少需要 12 位")
         self.result.password = password
 
         # 先访问 create-account/password 页面（HAR 确认需要此步建立服务端状态）
@@ -2858,6 +2858,8 @@ class AuthFlow:
         password = (password or "").strip()
         if not email or not password:
             raise RuntimeError("设置密码需要 email 和 password")
+        if len(password) < 12:
+            raise RuntimeError("设置密码失败：OpenAI 当前要求密码至少 12 位")
         if not self.result.access_token:
             raise RuntimeError("登录会话缺少 access_token，无法设置密码")
 
@@ -4477,8 +4479,8 @@ class AuthFlow:
         """Reset an existing account through OpenAI's email reset flow."""
         email = (email or "").strip().lower()
         new_password = (new_password or "").strip()
-        if not email or len(new_password) < 8:
-            raise RuntimeError("密码重置需要邮箱和至少 8 位的新密码")
+        if not email or len(new_password) < 12:
+            raise RuntimeError("密码重置需要邮箱和至少 12 位的新密码")
         set_otp_mode = getattr(mail_provider, "set_otp_mode", None)
         if set_otp_mode:
             set_otp_mode("password_reset")
