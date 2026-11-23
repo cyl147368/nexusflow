@@ -35,6 +35,7 @@ const loading = ref(false)
 const checking = ref(false)
 const refreshingAT = ref(false)
 const checkResult = ref('')
+const currentPlusTotal = ref(null)
 
 const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
@@ -81,8 +82,23 @@ async function load(resetPage) {
     const { items, total: t } = response
     rows.value = items
     total.value = t
+    await loadPlusTotal()
   } catch (e) { ElMessage.error(e.message) }
   finally { loading.value = false }
+}
+
+async function loadPlusTotal() {
+  try {
+    const result = await listRegistered({
+      limit: 1,
+      offset: 0,
+      filter: 'plus',
+      workflow_scope: workflowFilter.value,
+    })
+    currentPlusTotal.value = Number(result.total || 0)
+  } catch (_) {
+    currentPlusTotal.value = null
+  }
 }
 
 async function collectEmails(mode) {
@@ -136,7 +152,7 @@ async function doCheck(mode) {
     // 以前网络/代理挂了这里只会显示「0 可用Plus, 0 Free, 0 封号」，看不出是没检测成。
     // badToken 从 2026-08-10 起是**会入库**的结论，措辞也跟着改：
     // AT 没过期却 401 = 被吊销，大概率就是封号，不该再说得像只是要重新登录。
-    const parts = [`完成: ${plus} 可用Plus, ${free} Free, ${banned} 封号`]
+    const parts = [`本次检测: ${plus} 可领Plus, ${free} Free, ${banned} 封号`]
     if (badToken) parts.push(`${badToken} 个凭证失效（AT 被吊销，多半已封）`)
     if (noAt) parts.push(`${noAt} 个无AT，已跳过`)
     if (notFound) parts.push(`${notFound} 个记录已不存在`)
@@ -490,6 +506,9 @@ onActivated(() => load())
           删除选中 ({{ selected.length }})
         </el-button>
         <el-button type="danger" plain @click="deleteAll">清空全部</el-button>
+        <el-tag v-if="currentPlusTotal !== null" type="success" effect="plain">
+          当前可领Plus {{ currentPlusTotal }}
+        </el-tag>
         <span class="hint">{{ checkResult }}</span>
       </el-space>
 
