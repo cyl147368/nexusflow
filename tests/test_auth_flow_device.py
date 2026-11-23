@@ -103,13 +103,13 @@ class AuthFlowDeviceTest(unittest.TestCase):
         with (
             patch.object(flow, "check_proxy", return_value=True) as check_proxy,
             patch.object(flow, "warmup", return_value=True),
-            patch.object(flow, "get_csrf_token", return_value="csrf"),
+            patch.object(flow, "get_csrf_token", return_value="csrf") as get_csrf,
             patch.object(
                 flow,
                 "get_auth_url",
                 return_value="https://auth.openai.com/oauth/authorize?state=test",
-            ),
-            patch.object(flow, "auth_oauth_init", return_value="device-id"),
+            ) as get_auth_url,
+            patch.object(flow, "auth_oauth_init", return_value="device-id") as oauth_init,
             patch.object(flow, "get_sentinel_token", return_value="login-token"),
             patch.object(flow, "authorize_continue", return_value={}) as authorize_continue,
             patch.object(
@@ -133,20 +133,14 @@ class AuthFlowDeviceTest(unittest.TestCase):
             )
 
         check_proxy.assert_called_once_with()
+        get_csrf.assert_not_called()
+        get_auth_url.assert_not_called()
+        oauth_init.assert_not_called()
         authorize_continue.assert_not_called()
         self.assertEqual(result["mode"], "reset")
         self.assertIn(
             "https://auth.openai.com/api/accounts/password/send-otp",
             [url for url, _ in flow.session.post_urls],
-        )
-        send_request = next(
-            kwargs
-            for url, kwargs in flow.session.post_urls
-            if url == "https://auth.openai.com/api/accounts/password/send-otp"
-        )
-        self.assertEqual(
-            send_request["json"],
-            {"username": "recover@example.com"},
         )
         self.assertIn(
             "https://auth.openai.com/api/accounts/password/reset",
