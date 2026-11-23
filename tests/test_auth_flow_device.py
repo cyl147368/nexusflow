@@ -285,6 +285,31 @@ class AuthFlowDeviceTest(unittest.TestCase):
             self.assertTrue(flow.signup("new-alias@example.com", "sentinel"))
         self.assertFalse(flow._is_existing_account)
 
+    def test_email_otp_login_completes_totp_challenge_from_database(self):
+        flow = AuthFlow(
+            Config(),
+            account_callback=lambda _email: {"totp_secret": "JBSWY3DPEHPK3PXP"},
+        )
+        challenge = {
+            "continue_url": "https://auth.openai.com/mfa-challenge/challenge-123",
+            "page": {"type": "mfa_challenge"},
+        }
+        completed = {
+            "continue_url": "https://chatgpt.com/api/auth/callback/openai?code=ok",
+            "page": {"type": "external_url"},
+        }
+        with (
+            patch("auth_flow._totp_now", return_value="123456"),
+            patch.object(flow, "submit_mfa_totp", return_value=completed) as submit,
+        ):
+            result = flow._complete_mfa_if_needed(
+                challenge,
+                "alias@example.com",
+            )
+
+        submit.assert_called_once_with("123456", "challenge-123")
+        self.assertEqual(result, completed)
+
     def test_authorize_state_is_refreshed_after_sentinel(self):
         flow = AuthFlow(Config())
         with (

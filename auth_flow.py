@@ -3246,6 +3246,45 @@ class AuthFlow:
         except Exception:
             return {}
 
+    def _complete_mfa_if_needed(self, step: dict, email: str) -> dict:
+        """Complete a TOTP challenge surfaced after email-OTP login."""
+        page_type = (self._extract_page_type(step) or "").lower()
+        continue_url = self._normalize_continue_url(
+            self._extract_continue_url_from_step(step)
+        )
+        if not self._is_mfa_challenge_state(page_type, continue_url):
+            return step
+
+        totp_secret = (self.result.totp_secret or "").strip()
+        if not totp_secret and self._account_callback:
+            credential = self._account_callback(email) or {}
+            totp_secret = str(credential.get("totp_secret") or "").strip()
+            if totp_secret:
+                self.result.totp_secret = totp_secret
+                logger.info("已从数据库加载 TOTP secret")
+        if not totp_secret:
+            raise RuntimeError(
+                "账号需要 TOTP 2FA 验证，但数据库没有可用的 totp_secret"
+            )
+
+        challenge_id = ""
+        if "/mfa-challenge/" in (continue_url or ""):
+            challenge_id = continue_url.rsplit("/", 1)[-1]
+        if not challenge_id:
+            page = (step.get("page") or {}) if isinstance(step, dict) else {}
+            payload = (page.get("payload") or {}) if isinstance(page, dict) else {}
+            challenge_id = str(
+                payload.get("challenge_id")
+                or payload.get("id")
+                or payload.get("factor_id")
+                or ""
+            ).strip()
+        if not challenge_id:
+            raise RuntimeError("账号进入 TOTP 2FA 页面，但无法提取 challenge_id")
+
+        logger.info("邮箱验证码登录后命中 TOTP 2FA，提交动态码")
+        return self.submit_mfa_totp(_totp_now(totp_secret), challenge_id)
+
     # ── Step 8: 验证 OTP ──
     def verify_otp(self, otp_code: str) -> dict:
         logger.info("[7/10] 验证 OTP...")
@@ -4778,7 +4817,10 @@ class AuthFlow:
                             timeout=otp_timeout,
                             issued_after=otp_sent_at,
                         )
-                        login_resp = self.verify_otp(otp_code)
+                        login_resp = self._complete_mfa_if_needed(
+                            self.verify_otp(otp_code),
+                            email,
+                        )
                     else:
                         login_resp = self.login_password_verify(login_password)
                     page_type = (self._extract_page_type(login_resp) or "").lower()
@@ -4889,7 +4931,10 @@ class AuthFlow:
                 issued_after=otp_sent_at,
             )
             try:
-                otp_resp = self.verify_otp(otp_code)
+                otp_resp = self._complete_mfa_if_needed(
+                    self.verify_otp(otp_code),
+                    email,
+                )
                 self.fetch_client_auth_session_dump("post_verify_otp_protocol")
             except RuntimeError as e:
                 if any(code in str(e) for code in ("401", "409")):
@@ -4902,7 +4947,10 @@ class AuthFlow:
                         timeout=otp_timeout,
                         issued_after=otp_sent_at,
                     )
-                    otp_resp = self.verify_otp(otp_code)
+                    otp_resp = self._complete_mfa_if_needed(
+                        self.verify_otp(otp_code),
+                        email,
+                    )
                     self.fetch_client_auth_session_dump("post_verify_otp_retry_protocol")
                 else:
                     raise
