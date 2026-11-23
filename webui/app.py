@@ -1255,37 +1255,60 @@ def _looks_deactivated(body: str) -> bool:
 
 
 def _classify_plus_payload(data: dict) -> dict:
-    """Classify the active account from an accounts/check response."""
+    """Classify every usable account node in an accounts/check response.
+
+    The response can contain the personal account plus workspace accounts.
+    A plan or promotion may be attached to a non-default node, so looking at
+    only ``accounts.default`` produces false Free results.
+    """
     accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
     if not isinstance(accounts, dict) or not accounts:
         return {"status": "error", "label": "无账户数据"}
-    info = accounts.get("default")
-    if not isinstance(info, dict):
-        info = next(
-            (
-                item
-                for item in accounts.values()
-                if isinstance(item, dict) and item.get("account")
-            ),
-            {},
-        )
-    account = info.get("account") or {}
-    entitlement = info.get("entitlement") or {}
-    if account.get("is_deactivated", False):
-        return {"status": "banned", "label": "封号"}
-    plan = str(account.get("plan_type") or "free").lower()
-    if plan in {"plus", "pro"} or entitlement.get("has_active_subscription"):
-        return {"status": "plus_active", "label": "Plus生效中"}
 
-    campaigns = info.get("eligible_promo_campaigns") or {}
-    plus_campaign = (
-        campaigns.get("plus")
-        if isinstance(campaigns, dict)
-        else None
-    )
-    if isinstance(plus_campaign, dict):
-        metadata = plus_campaign.get("metadata") or {}
-        discount = metadata.get("discount") or {}
+    infos = [item for item in accounts.values() if isinstance(item, dict)]
+    if not infos:
+        return {"status": "error", "label": "无账户数据"}
+
+    usable = []
+    for info in infos:
+        account = info.get("account")
+        if not isinstance(account, dict):
+            account = {}
+        if account.get("is_deactivated") is True:
+            continue
+        usable.append((info, account))
+
+    if not usable:
+        return {"status": "banned", "label": "封号"}
+
+    has_active_plus = False
+    has_free_plus_promo = False
+    for info, account in usable:
+        entitlement = info.get("entitlement")
+        if not isinstance(entitlement, dict):
+            entitlement = {}
+        plan = str(account.get("plan_type") or "free").lower()
+        if (
+            plan in {"plus", "pro"}
+            or entitlement.get("has_active_subscription") is True
+        ):
+            has_active_plus = True
+
+        campaigns = info.get("eligible_promo_campaigns")
+        plus_campaign = (
+            campaigns.get("plus")
+            if isinstance(campaigns, dict)
+            else None
+        )
+        if not isinstance(plus_campaign, dict):
+            continue
+
+        metadata = plus_campaign.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        discount = metadata.get("discount")
+        if not isinstance(discount, dict):
+            discount = {}
         try:
             percentage = float(discount.get("percentage") or 0)
         except (TypeError, ValueError):
@@ -1295,10 +1318,100 @@ def _classify_plus_payload(data: dict) -> dict:
         if (
             percentage >= 100
             or "free" in label
-            or "plus-1-month-free" in campaign_id
+            or "free" in campaign_id
         ):
-            return {"status": "plus_eligible", "label": "可领Plus试用"}
+            has_free_plus_promo = True
+
+    if has_active_plus:
+        return {"status": "plus_active", "label": "Plus生效中"}
+    if has_free_plus_promo:
+        return {"status": "plus_eligible", "label": "可领Plus试用"}
     return {"status": "free", "label": "Free"}
+
+
+_PLUS_COUPON_URL = (
+    "https://chatgpt.com/backend-api/promo_campaign/check_coupon"
+    "?coupon=plus-1-month-free&is_coupon_from_query_param=true"
+)
+
+
+def _probe_plus_coupon(sess, headers: dict, timeout: int = 15) -> dict:
+    """Ask OpenAI whether the one-month Plus coupon is redeemable.
+
+    ``accounts/check`` only exposes a campaign hint. The coupon check is the
+    authoritative, read-only answer and prevents stale campaign hints from
+    being shown as a still-claimable trial.
+    """
+    try:
+        resp = sess.get(_PLUS_COUPON_URL, headers=headers, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "state": "transport_error",
+            "error": str(exc)[:200],
+        }
+    if resp.status_code != 200:
+        return {
+            "ok": False,
+            "state": f"http_{resp.status_code}",
+            "error": _body_text(resp)[:200],
+        }
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "state": "invalid_json", "error": ""}
+    if not isinstance(body, dict):
+        return {"ok": False, "state": "invalid_body", "error": ""}
+    redemption = body.get("redemption")
+    if not isinstance(redemption, dict):
+        redemption = {}
+    state = str(body.get("state") or body.get("status") or "").strip().lower()
+    return {
+        "ok": True,
+        "state": state,
+        "redeemed": redemption.get("redeemed") is True,
+    }
+
+
+def _confirm_plus_trial(
+    sess,
+    headers: dict,
+    base_result: dict,
+    timeout: int = 15,
+) -> dict:
+    """Replace an accounts/check hint with the authoritative coupon verdict."""
+    if base_result.get("status") not in {"free", "plus_eligible"}:
+        return base_result
+    probe = _probe_plus_coupon(sess, headers, timeout=timeout)
+    trial_hint = base_result.get("status") == "plus_eligible"
+    if not probe.get("ok"):
+        return {
+            "status": "error",
+            "label": "试用资格检测失败",
+            "trial_hint": trial_hint,
+            "coupon_state": probe.get("state", ""),
+        }
+    state = str(probe.get("state") or "")
+    if state == "eligible" and not probe.get("redeemed"):
+        return {
+            "status": "plus_eligible",
+            "label": "可领Plus试用",
+            "trial_hint": trial_hint,
+            "coupon_state": state,
+        }
+    if state in {"not_eligible", "ineligible"} or probe.get("redeemed"):
+        return {
+            "status": "free",
+            "label": "Free",
+            "trial_hint": trial_hint,
+            "coupon_state": state,
+        }
+    return {
+        "status": "error",
+        "label": "试用资格状态未知",
+        "trial_hint": trial_hint,
+        "coupon_state": state,
+    }
 
 
 @app.post("/api/registered/check_plus")
@@ -1328,7 +1441,12 @@ def api_check_plus(req: CheckPlusReq):
 
     note = ""
 
-    def _check(access_token: str, account_id: str = "", device_id: str = ""):
+    def _check(
+        access_token: str,
+        account_id: str = "",
+        device_id: str = "",
+        cookie_header: str = "",
+    ):
         """打一次检测请求。
 
         ⚠️ 这里**不再自动降级直连**。原来的行为是：代理第一次报错就永久切直连，
@@ -1354,8 +1472,10 @@ def api_check_plus(req: CheckPlusReq):
             headers["ChatGPT-Account-ID"] = account_id
         if device_id:
             headers["OAI-Device-Id"] = device_id
+        if cookie_header:
+            headers["Cookie"] = cookie_header
         try:
-            return sess.get(url, headers=headers, timeout=15)
+            return sess.get(url, headers=headers, timeout=15), headers
         except Exception as e:  # noqa: BLE001
             if proxy and not note:
                 # 把 curl 的错误码带出来：(97)=SOCKS5 鉴权被拒，(7)=连不上，
@@ -1390,8 +1510,14 @@ def api_check_plus(req: CheckPlusReq):
         device_id = (cred.get("device_id") or "").strip() or str(
             uuid.uuid5(uuid.NAMESPACE_DNS, f"dango-check-plus:{email}")
         )
+        cookie_header = str(cred.get("cookie_header") or "").strip()
         try:
-            resp = _check(at, account_id, device_id)
+            resp, request_headers = _check(
+                at,
+                account_id,
+                device_id,
+                cookie_header,
+            )
         except Exception as e:  # noqa: BLE001
             results[email] = {"status": "error", "label": "网络失败"}
             log.warning(f"[check_plus] {email} 请求失败: {str(e)[:140]}")
@@ -1426,26 +1552,12 @@ def api_check_plus(req: CheckPlusReq):
         except Exception:  # noqa: BLE001
             results[email] = {"status": "error", "label": "响应非 JSON"}
             continue
-        accts = data.get("accounts", {})
-        if not accts:
-            results[email] = {"status": "error", "label": "无账户数据"}
-            continue
-        info = next(iter(accts.values()))
-        acct = info.get("account", {})
-        ent = info.get("entitlement", {})
-        promo = info.get("eligible_promo_campaigns", {})
-        if acct.get("is_deactivated", False):
-            results[email] = {"status": "banned", "label": "封号"}
-            continue
-        plan = acct.get("plan_type", "free")
-        has_sub = ent.get("has_active_subscription", False)
-        has_plus_promo = "plus" in promo and promo["plus"].get("id") == "plus-1-month-free"
-        if plan == "plus" or has_sub:
-            results[email] = {"status": "plus_active", "label": "Plus生效中"}
-        elif has_plus_promo:
-            results[email] = {"status": "plus_eligible", "label": "可领Plus试用"}
-        else:
-            results[email] = {"status": "free", "label": "Free"}
+        result = _classify_plus_payload(data)
+        results[email] = _confirm_plus_trial(
+            sess,
+            request_headers,
+            result,
+        )
 
     try:
         sess.close()
@@ -1595,7 +1707,12 @@ def api_check_plus_fast(req: CheckPlusReq):
                     "status": "error",
                     "label": "响应非 JSON",
                 }, ""
-            return email, _classify_plus_payload(payload), ""
+            result = _classify_plus_payload(payload)
+            return email, _confirm_plus_trial(
+                sess,
+                headers,
+                result,
+            ), ""
         finally:
             try:
                 sess.close()

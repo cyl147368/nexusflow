@@ -682,13 +682,69 @@ class IntegrationApiTest(unittest.TestCase):
             },
         )
 
-    def test_plus_payload_prefers_default_and_detects_free_trial(self):
+    def test_plus_payload_scans_all_account_nodes_for_free_trial(self):
         from webui.app import _classify_plus_payload
 
         payload = {
             "accounts": {
                 "other": {
                     "account": {"plan_type": "free"},
+                    "entitlement": {"has_active_subscription": False},
+                    "eligible_promo_campaigns": {
+                        "plus": {
+                            "id": "plus-1-month-free",
+                            "metadata": {
+                                "discount": {"percentage": 100},
+                                "promotion_type_label": "1-month free trial",
+                            },
+                        },
+                    },
+                },
+                "default": {
+                    "account": {"plan_type": "free"},
+                    "entitlement": {"has_active_subscription": False},
+                    "eligible_promo_campaigns": {},
+                },
+            },
+        }
+        self.assertEqual(
+            _classify_plus_payload(payload)["status"],
+            "plus_eligible",
+        )
+
+    def test_plus_payload_scans_all_account_nodes_for_active_plus(self):
+        from webui.app import _classify_plus_payload
+
+        payload = {
+            "accounts": {
+                "default": {
+                    "account": {"plan_type": "free"},
+                    "entitlement": {"has_active_subscription": False},
+                    "eligible_promo_campaigns": {},
+                },
+                "workspace": {
+                    "account": {"plan_type": "plus"},
+                    "entitlement": {"has_active_subscription": True},
+                    "eligible_promo_campaigns": {},
+                },
+            },
+        }
+        self.assertEqual(
+            _classify_plus_payload(payload)["status"],
+            "plus_active",
+        )
+
+    def test_plus_payload_ignores_deactivated_node_without_hiding_usable_node(self):
+        from webui.app import _classify_plus_payload
+
+        payload = {
+            "accounts": {
+                "disabled-workspace": {
+                    "account": {
+                        "plan_type": "plus",
+                        "is_deactivated": True,
+                    },
+                    "entitlement": {"has_active_subscription": True},
                     "eligible_promo_campaigns": {},
                 },
                 "default": {
@@ -709,6 +765,33 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(
             _classify_plus_payload(payload)["status"],
             "plus_eligible",
+        )
+
+    def test_plus_payload_marks_banned_when_every_account_node_is_deactivated(self):
+        from webui.app import _classify_plus_payload
+
+        payload = {
+            "accounts": {
+                "default": {
+                    "account": {
+                        "plan_type": "free",
+                        "is_deactivated": True,
+                    },
+                    "entitlement": {"has_active_subscription": False},
+                    "eligible_promo_campaigns": {
+                        "plus": {
+                            "id": "plus-1-month-free",
+                            "metadata": {
+                                "discount": {"percentage": 100},
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        self.assertEqual(
+            _classify_plus_payload(payload)["status"],
+            "banned",
         )
 
     def test_discounted_plus_offer_is_not_a_free_trial(self):
@@ -733,6 +816,32 @@ class IntegrationApiTest(unittest.TestCase):
         }
         self.assertEqual(_classify_plus_payload(payload)["status"], "free")
 
+    def test_coupon_failure_does_not_confirm_a_campaign_hint(self):
+        from webui.app import _confirm_plus_trial
+
+        class FailedResponse:
+            status_code = 503
+            text = "unavailable"
+
+            @staticmethod
+            def json():
+                return {}
+
+        class FailedSession:
+            @staticmethod
+            def get(url, headers=None, timeout=0):
+                del url, headers, timeout
+                return FailedResponse()
+
+        result = _confirm_plus_trial(
+            FailedSession(),
+            {},
+            {"status": "plus_eligible", "label": "可领Plus试用"},
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(result["trial_hint"])
+        self.assertEqual(result["coupon_state"], "http_503")
+
     def test_fast_plus_check_classifies_and_persists_results(self):
         from webui import db
 
@@ -746,33 +855,43 @@ class IntegrationApiTest(unittest.TestCase):
             "workflow_scope": "integration",
             "access_token": "free-token",
         })
+        db.save_registered({
+            "email": "hint-token@example.com",
+            "workflow_scope": "integration",
+            "access_token": "hint-token",
+        })
+        db.save_registered({
+            "email": "coupon-token@example.com",
+            "workflow_scope": "integration",
+            "access_token": "coupon-token",
+        })
 
         class FakeResponse:
             status_code = 200
             text = ""
 
-            def __init__(self, promo):
-                self.promo = promo
+            def __init__(self, body):
+                self.body = body
 
             def json(self):
-                return {
-                    "accounts": {
-                        "default": {
-                            "account": {"plan_type": "free"},
-                            "entitlement": {
-                                "has_active_subscription": False,
-                            },
-                            "eligible_promo_campaigns": self.promo,
-                        },
-                    },
-                }
+                return self.body
 
         class FakeSession:
             def get(self, url, headers=None, timeout=0):
-                del url, timeout
+                del timeout
                 token = (headers or {}).get("Authorization", "")
-                if "plus-token" in token:
+                if "promo_campaign/check_coupon" in url:
+                    state = (
+                        "eligible"
+                        if "plus-token" in token or "coupon-token" in token
+                        else "not_eligible"
+                    )
                     return FakeResponse({
+                        "state": state,
+                        "redemption": {"redeemed": False},
+                    })
+                if "plus-token" in token:
+                    promo = {
                         "plus": {
                             "id": "plus-1-month-free",
                             "metadata": {
@@ -780,8 +899,30 @@ class IntegrationApiTest(unittest.TestCase):
                                 "promotion_type_label": "1-month free trial",
                             },
                         },
-                    })
-                return FakeResponse({})
+                    }
+                elif "hint-token" in token:
+                    promo = {
+                        "plus": {
+                            "id": "plus-1-month-free",
+                            "metadata": {
+                                "discount": {"percentage": 100},
+                                "promotion_type_label": "1-month free trial",
+                            },
+                        },
+                    }
+                else:
+                    promo = {}
+                return FakeResponse({
+                    "accounts": {
+                        "default": {
+                            "account": {"plan_type": "free"},
+                            "entitlement": {
+                                "has_active_subscription": False,
+                            },
+                            "eligible_promo_campaigns": promo,
+                        },
+                    },
+                })
 
             def close(self):
                 return None
@@ -796,6 +937,8 @@ class IntegrationApiTest(unittest.TestCase):
                     "emails": [
                         "plus-token@example.com",
                         "free-token@example.com",
+                        "hint-token@example.com",
+                        "coupon-token@example.com",
                     ],
                     "proxy": "",
                 },
@@ -808,6 +951,11 @@ class IntegrationApiTest(unittest.TestCase):
             "plus_eligible",
         )
         self.assertEqual(results["free-token@example.com"]["status"], "free")
+        self.assertEqual(results["hint-token@example.com"]["status"], "free")
+        self.assertEqual(
+            results["coupon-token@example.com"]["status"],
+            "plus_eligible",
+        )
         self.assertEqual(
             db.get_registered("plus-token@example.com")["extra"]["plus_check"]["status"],
             "plus_eligible",
