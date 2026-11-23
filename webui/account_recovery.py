@@ -112,8 +112,12 @@ def _recover_account_login_first(
     env_overrides = {
         "WEBUI_ALLOW_LOGIN": "1",
         "OTP_TIMEOUT": str(otp_timeout),
-        "SKIP_OAUTH_TOKEN_EXCHANGE": "0",
-        "OAUTH_CODEX_RT_EXCHANGE": "1",
+        # Recovery only needs session + access token to repair the password.
+        # Codex RT commonly hits add-phone and can add minutes of pointless
+        # waiting before the recovery flow reaches password/add.
+        "SKIP_OAUTH_TOKEN_EXCHANGE": "1",
+        "OAUTH_CODEX_RT_EXCHANGE": "0",
+        "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
     }
     previous = db.get_registered(email) or {}
     flow = AuthFlow(
@@ -134,6 +138,8 @@ def _recover_account_login_first(
         force_email_otp=True,
     )
     data = result.to_dict()
+    if not data.get("refresh_token"):
+        data["refresh_token"] = previous.get("refresh_token") or ""
     data["email"] = email
     data["workflow_scope"] = workflow_scope
     data["credential_source"] = "recovery"
@@ -306,8 +312,9 @@ def recover_account(
             env_overrides={
                 "WEBUI_ALLOW_LOGIN": "1",
                 "OTP_TIMEOUT": str(otp_timeout),
-                "SKIP_OAUTH_TOKEN_EXCHANGE": "0",
-                "OAUTH_CODEX_RT_EXCHANGE": "1",
+                "SKIP_OAUTH_TOKEN_EXCHANGE": "1",
+                "OAUTH_CODEX_RT_EXCHANGE": "0",
+                "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
             },
             account_callback=lambda _email: {
                 "password": previous.get("password") or "",
@@ -386,6 +393,8 @@ def recover_account(
 
     if result is not None:
         data = result.to_dict()
+        if not data.get("refresh_token"):
+            data["refresh_token"] = previous.get("refresh_token") or ""
     else:
         data = dict(previous)
     data.update(
