@@ -2139,6 +2139,7 @@ class AuthFlow:
                 if mode == "passwordless_signup":
                     logger.info("服务端选择 passwordless 注册流程（新账号，无密码），等待 OTP")
                     self._is_existing_account = False
+                    return True
                 else:
                     logger.info("检测到已有账号，切换到 OTP 登录流程")
                     self._is_existing_account = True

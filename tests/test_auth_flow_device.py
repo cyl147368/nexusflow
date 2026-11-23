@@ -198,6 +198,18 @@ class AuthFlowDeviceTest(unittest.TestCase):
 
         register_password.assert_not_called()
 
+    def test_passwordless_signup_is_treated_as_new_for_recovery(self):
+        flow = AuthFlow(Config())
+        signup_response = {
+            "page": {
+                "type": "email_otp_verification",
+                "payload": {"email_verification_mode": "passwordless_signup"},
+            }
+        }
+        with patch.object(flow, "authorize_continue", return_value=signup_response):
+            self.assertTrue(flow.signup("new-alias@example.com", "sentinel"))
+        self.assertFalse(flow._is_existing_account)
+
     def test_authorize_state_is_refreshed_after_sentinel(self):
         flow = AuthFlow(Config())
         with (
