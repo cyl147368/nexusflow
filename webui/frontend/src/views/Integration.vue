@@ -772,7 +772,8 @@ onDeactivated(stopPolling)
               />
             </el-select>
             <div class="hint proxy-hint">
-              代理池共 {{ proxyPool.length }} 条。下拉选择本次注册出口，留空则直连。
+              代理池共 {{ proxyPool.length }} 条。当前选择作为首选出口；遇到 403、
+              代理认证失败、超时或 warmup 失败时会自动切换并冷却坏代理。
             </div>
           </el-form-item>
           <el-form-item label="OTP 超时（秒）">
@@ -862,6 +863,8 @@ onDeactivated(stopPolling)
           </div>
           <div v-if="job.email"><span>隐藏邮箱</span><b>{{ job.email }}</b></div>
           <div v-if="job.run_id"><span>主任务 Run ID</span><b>{{ job.run_id }}</b></div>
+          <div v-if="job.registration_proxy"><span>注册代理</span><b>{{ job.registration_proxy }}</b></div>
+          <div v-if="job.proxy_switch_count"><span>代理切换</span><b>{{ job.proxy_switch_count }} 次</b></div>
           <div v-if="job.relay_url"><span>取件链接</span><b class="break">{{ job.relay_url }}</b></div>
           <div v-if="job.qualification_status">
             <span>资格校验</span>

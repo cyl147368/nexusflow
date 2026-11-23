@@ -158,7 +158,11 @@ class IntegrationApiTest(unittest.TestCase):
             return run_id
 
         with (
-            patch.object(integration, "_preflight_registration_network"),
+            patch.object(
+                integration,
+                "_select_registration_proxy",
+                return_value={"proxy": "", "candidates": 1, "probed": 1},
+            ),
             patch.object(integration, "_request_json", side_effect=request_json),
             patch.object(
                 integration.registrar,
@@ -236,6 +240,11 @@ class IntegrationApiTest(unittest.TestCase):
             return "new-split-run"
 
         with (
+            patch.object(
+                integration,
+                "_select_registration_proxy",
+                return_value={"proxy": "", "candidates": 1, "probed": 1},
+            ),
             patch.object(
                 integration,
                 "list_icloud_aliases",
@@ -370,6 +379,43 @@ class IntegrationApiTest(unittest.TestCase):
             json={"proxy": "http://two:8080"},
         )
         self.assertEqual(deleted.json()["items"], ["socks5://one:pass@127.0.0.1:1080"])
+
+    def test_integration_proxy_selection_skips_failed_proxy(self):
+        import time
+
+        from webui import db, integration
+
+        bad = "socks5://bad.example:1080"
+        good = "socks5://good.example:1080"
+        integration._proxy_cursor = 0
+
+        def preflight(proxy):
+            if proxy == bad:
+                raise integration.IntegrationError(
+                    "warmup HTTP 403 Cloudflare"
+                )
+
+        with (
+            patch.object(
+                integration.db,
+                "list_proxy_pool",
+                return_value=[bad, good],
+            ),
+            patch.object(
+                integration,
+                "_preflight_registration_network",
+                side_effect=preflight,
+            ),
+            patch.object(integration, "_log"),
+        ):
+            selected = integration._select_registration_proxy({
+                "proxy": bad,
+            })
+
+        self.assertEqual(selected["proxy"], good)
+        health = db.get_proxy_health()
+        self.assertGreater(health[bad]["cooldown_until"], time.time())
+        self.assertEqual(health[good]["failures"], 0)
 
     def test_integration_job_can_be_loaded_after_restart(self):
         from webui import db

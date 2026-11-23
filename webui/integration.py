@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from . import db, registrar
@@ -26,6 +27,8 @@ _resume_started = False
 _stop_event = threading.Event()
 _pause_event = threading.Event()
 _worker_thread: Optional[threading.Thread] = None
+_proxy_cursor = 0
+_proxy_cursor_lock = threading.Lock()
 
 
 class IntegrationError(RuntimeError):
@@ -665,9 +668,20 @@ def _preflight_registration_network(proxy: str) -> None:
     try:
         response = session.get("https://chatgpt.com/", timeout=15)
         try:
-            device_id = session.cookies.get("oai-did", "")
+            device_id = session.cookies.get(
+                "oai-did",
+                "",
+                domain=".chatgpt.com",
+            )
         except Exception:
             device_id = ""
+            try:
+                for cookie in session.cookies:
+                    if getattr(cookie, "name", "") == "oai-did":
+                        device_id = getattr(cookie, "value", "") or ""
+                        break
+            except Exception:
+                pass
         if not device_id:
             raise IntegrationError(
                 f"注册预检失败：通过 {_redact_proxy(proxy)} 未获取到 chatgpt.com 的 "
@@ -685,6 +699,120 @@ def _preflight_registration_network(proxy: str) -> None:
             session.close()
         except Exception:
             pass
+
+
+def _is_proxy_failure(message: str) -> bool:
+    text = str(message or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "warmup",
+            "http 403",
+            "cloudflare",
+            "proxyerror",
+            "socks5",
+            "curl: (7)",
+            "curl: (28)",
+            "curl: (97)",
+            "timed out",
+            "timeout",
+            "tls",
+            "connection",
+            "connect",
+            "too many requests",
+            "rate_limit_exceeded",
+        )
+    )
+
+
+def _proxy_candidates(cfg: dict, exclude: set[str] | None = None) -> list[str]:
+    global _proxy_cursor
+    excluded = {str(item or "").strip() for item in (exclude or set())}
+    configured = str(cfg.get("proxy") or "").strip()
+    pool = [
+        str(item or "").strip()
+        for item in db.list_proxy_pool()
+        if str(item or "").strip()
+    ]
+    with _proxy_cursor_lock:
+        if pool:
+            start = _proxy_cursor % len(pool)
+            pool = pool[start:] + pool[:start]
+            _proxy_cursor = (start + 1) % len(pool)
+    ordered: list[str] = []
+    for proxy in ([configured] if configured else []) + pool:
+        if proxy and proxy not in excluded and proxy not in ordered:
+            ordered.append(proxy)
+    if ordered:
+        return ordered
+    # Direct access is the final fallback only when no explicit proxy/pool is set.
+    if not configured and not pool and "" not in excluded:
+        return [""]
+    return []
+
+
+def _select_registration_proxy(
+    cfg: dict,
+    *,
+    exclude: set[str] | None = None,
+    max_probe: int = 24,
+    workers: int = 6,
+) -> dict:
+    """Choose a reachable ChatGPT proxy and cool down rejected candidates."""
+    candidates = _proxy_candidates(cfg, exclude=exclude)
+    if not candidates:
+        raise IntegrationError("代理池没有可选代理，或全部处于冷却状态")
+
+    health = db.get_proxy_health()
+    now = time.time()
+    ready = [
+        proxy
+        for proxy in candidates
+        if float((health.get(proxy) or {}).get("cooldown_until") or 0) <= now
+    ]
+    if not ready:
+        raise IntegrationError("代理池中的代理全部处于冷却状态")
+    candidates = ready[:max(1, min(max_probe, len(ready)))]
+
+    for start in range(0, len(candidates), max(1, workers)):
+        batch = candidates[start:start + max(1, workers)]
+
+        def probe(proxy: str) -> tuple[str, bool, str]:
+            try:
+                _preflight_registration_network(proxy)
+                return proxy, True, ""
+            except Exception as exc:  # noqa: BLE001
+                message = str(exc)
+                if proxy:
+                    message = message.replace(proxy, _redact_proxy(proxy))
+                return proxy, False, message
+
+        winner = ""
+        with ThreadPoolExecutor(
+            max_workers=max(1, min(workers, len(batch))),
+            thread_name_prefix="proxy-probe",
+        ) as pool:
+            results = list(pool.map(probe, batch))
+            for proxy, ok, error in results:
+                if ok:
+                    winner = proxy
+                    db.mark_proxy_success(proxy)
+                    break
+                db.mark_proxy_failure(
+                    proxy,
+                    error or "ChatGPT preflight failed",
+                    cooldown_seconds=900,
+                )
+                _log(f"代理不可用，已冷却 15 分钟：{_redact_proxy(proxy)}；{error[:180]}")
+        if winner:
+            return {
+                "proxy": winner,
+                "candidates": len(candidates),
+                "probed": min(start + len(batch), len(candidates)),
+            }
+    raise IntegrationError(
+        f"已并发探测 {len(candidates)} 个代理，均无法通过 ChatGPT 预检"
+    )
 
 
 _ACTIVE_STATUSES = {"running", "paused", "stopping"}
@@ -829,6 +957,15 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
         else ""
     )
     resume_run_id = str(job.get("run_id") or "").strip() if resuming else ""
+    proxy_selection = _select_registration_proxy(cfg)
+    registration_proxy = str(proxy_selection["proxy"])
+    proxy_label = _redact_proxy(registration_proxy)
+    _set_job(
+        registration_proxy=proxy_label,
+        proxy_candidates=proxy_selection["candidates"],
+        proxy_probed=proxy_selection["probed"],
+        proxy_switch_count=0,
+    )
     if not resuming:
         _set_job(
             status="running",
@@ -856,9 +993,10 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             qualification_results=[],
             qualification_error="",
         )
-        _log(f"开始第 {cycle_no} 轮，先检查注册网络与代理："
-             f"{_redact_proxy(cfg.get('proxy') or '')}")
-        _preflight_registration_network(cfg.get("proxy") or "")
+        _log(
+            f"开始第 {cycle_no} 轮；代理预检通过：{proxy_label} "
+            f"（候选 {proxy_selection['candidates']}，探测 {proxy_selection['probed']}）"
+        )
     else:
         _set_job(
             status="running",
@@ -869,7 +1007,10 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             email=resume_email,
             base_email=base_email,
         )
-        _log(f"恢复第 {cycle_no} 轮：{resume_email or '尚未创建隐藏邮箱'}")
+        _log(
+            f"恢复第 {cycle_no} 轮：{resume_email or '尚未创建隐藏邮箱'}；"
+            f"代理预检通过：{proxy_label}"
+        )
 
     _set_job(stage="creating_alias")
     alias_label = f"NexusFlow {cycle_id}"
@@ -1012,9 +1153,29 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
 
     successes: list[dict] = []
     failures: list[dict] = []
+    proxy_needs_refresh = False
     for index, item in enumerate(plan):
         if _stop_event.is_set():
             break
+        if proxy_needs_refresh:
+            selection = _select_registration_proxy(
+                cfg,
+                exclude={registration_proxy},
+            )
+            registration_proxy = str(selection["proxy"])
+            proxy_needs_refresh = False
+            _set_job(
+                registration_proxy=_redact_proxy(registration_proxy),
+                proxy_candidates=selection["candidates"],
+                proxy_probed=selection["probed"],
+                proxy_switch_count=int(
+                    get_job().get("proxy_switch_count") or 0
+                ) + 1,
+            )
+            _log(
+                "代理已自动切换："
+                f"{_redact_proxy(registration_proxy)}"
+            )
         address = str(item.get("email") or "").strip().lower()
         is_split = item.get("role") == "split"
         stage = "registering_split" if is_split else "registering_main"
@@ -1076,7 +1237,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             "want_access_token": cfg["want_access_token"],
             "want_session_token": cfg["want_session_token"],
             "want_refresh_token": cfg["want_refresh_token"],
-            "proxy": cfg.get("proxy") or "",
+            "proxy": registration_proxy,
             "otp_timeout": cfg["otp_timeout"],
             "allow_existing_login": True,
             "want_2fa": cfg["want_2fa"],
@@ -1104,6 +1265,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             }
 
         if outcome.get("status") == "done":
+            db.mark_proxy_success(registration_proxy)
             item["status"] = "success"
             successes.append({
                 "email": address,
@@ -1112,17 +1274,34 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             })
             _log(f"注册成功：{address}")
         else:
+            error_text = outcome.get("error") or "注册失败"
             failure = {
                 "email": address,
                 "role": item.get("role"),
                 "run_id": run_id,
-                "error": outcome.get("error") or "注册失败",
+                "error": error_text,
                 "category": outcome.get("error_category") or "unknown",
+                "proxy": _redact_proxy(registration_proxy),
             }
             item["status"] = "failed"
             item["error"] = failure["error"]
             failures.append(failure)
             _log(f"注册失败：{address}；{failure['error']}")
+            if _is_proxy_failure(error_text):
+                db.mark_proxy_failure(
+                    registration_proxy,
+                    error_text,
+                    cooldown_seconds=900,
+                )
+                proxy_needs_refresh = index + 1 < len(plan)
+                _log(
+                    "当前代理已标记冷却 15 分钟，"
+                    + (
+                        "下一个邮箱将自动换代理"
+                        if proxy_needs_refresh
+                        else "下一轮将自动换代理"
+                    )
+                )
         _set_job(
             cycle_accounts=plan,
             cycle_address_results=successes + failures,

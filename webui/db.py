@@ -81,6 +81,15 @@ def init_db():
             updated_at  REAL NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS proxy_health (
+            proxy           TEXT PRIMARY KEY,
+            failures        INTEGER NOT NULL DEFAULT 0,
+            cooldown_until  REAL NOT NULL DEFAULT 0,
+            last_error      TEXT,
+            last_success_at REAL,
+            updated_at      REAL NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS registered (
             email           TEXT PRIMARY KEY,
             workflow_scope  TEXT NOT NULL DEFAULT 'legacy',
@@ -1433,6 +1442,62 @@ def delete_proxy(proxy: str) -> bool:
         rc = con.execute("DELETE FROM proxy_pool WHERE proxy=?", (proxy,))
         con.commit()
         return rc.rowcount > 0
+
+
+def get_proxy_health() -> dict[str, dict]:
+    with closing(_conn()) as con:
+        rows = con.execute("SELECT * FROM proxy_health").fetchall()
+    return {row["proxy"]: dict(row) for row in rows}
+
+
+def mark_proxy_success(proxy: str) -> None:
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return
+    now = time.time()
+    with _lock, closing(_conn()) as con:
+        con.execute(
+            "INSERT INTO proxy_health(proxy, failures, cooldown_until, "
+            "last_error, last_success_at, updated_at) "
+            "VALUES (?, 0, 0, '', ?, ?) "
+            "ON CONFLICT(proxy) DO UPDATE SET failures=0, cooldown_until=0, "
+            "last_error='', last_success_at=excluded.last_success_at, "
+            "updated_at=excluded.updated_at",
+            (proxy, now, now),
+        )
+        con.commit()
+
+
+def mark_proxy_failure(
+    proxy: str,
+    error: str,
+    cooldown_seconds: int = 600,
+) -> dict:
+    proxy = str(proxy or "").strip()
+    if not proxy:
+        return {}
+    now = time.time()
+    with _lock, closing(_conn()) as con:
+        con.execute(
+            "INSERT INTO proxy_health(proxy, failures, cooldown_until, "
+            "last_error, updated_at) VALUES (?, 1, ?, ?, ?) "
+            "ON CONFLICT(proxy) DO UPDATE SET "
+            "failures=proxy_health.failures+1, "
+            "cooldown_until=excluded.cooldown_until, "
+            "last_error=excluded.last_error, updated_at=excluded.updated_at",
+            (
+                proxy,
+                now + max(30, int(cooldown_seconds or 600)),
+                str(error or "")[:500],
+                now,
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM proxy_health WHERE proxy=?",
+            (proxy,),
+        ).fetchone()
+        con.commit()
+    return dict(row) if row else {}
 
 
 def set_setting(key: str, value) -> None:
