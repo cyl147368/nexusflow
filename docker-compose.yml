@@ -27,6 +27,11 @@ services:
       PAYMENT_DETECTOR_TOKEN: "${PAYMENT_DETECTOR_TOKEN:?required}"
       NEXUSFLOW_UPDATER_URL: "http://updater:8092"
       NEXUSFLOW_UPDATER_TOKEN: "${NEXUSFLOW_UPDATER_TOKEN:?required}"
+      BROWSER_FALLBACK_ENABLED: "${BROWSER_FALLBACK_ENABLED:-1}"
+      BROWSER_FALLBACK_DRIVER: "${BROWSER_FALLBACK_DRIVER:-auto}"
+      BROWSER_FALLBACK_MAX_ATTEMPTS: "${BROWSER_FALLBACK_MAX_ATTEMPTS:-2}"
+      BROWSER_FALLBACK_TIMEOUT: "${BROWSER_FALLBACK_TIMEOUT:-75}"
+    shm_size: "1gb"
     volumes:
       - nexusflow-runtime:/app/runtime
     networks: [nexusflow]

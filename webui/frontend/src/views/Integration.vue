@@ -71,6 +71,7 @@ const form = ref({
   want_session_token: true,
   want_refresh_token: true,
   want_2fa: false,
+  browser_fallback: true,
   continuous: true,
   target_count: 0,
   cool_down_seconds: 30,
@@ -819,6 +820,7 @@ onDeactivated(stopPolling)
             <el-checkbox v-model="form.want_session_token">Session Token</el-checkbox>
             <el-checkbox v-model="form.want_refresh_token">Refresh Token</el-checkbox>
             <el-checkbox v-model="form.want_2fa">注册后绑定 2FA</el-checkbox>
+            <el-checkbox v-model="form.browser_fallback">风控混合回退</el-checkbox>
           </div>
         </el-form>
         <el-alert

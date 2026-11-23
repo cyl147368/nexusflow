@@ -19,6 +19,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m playwright install --with-deps chromium \
+    && python -m camoufox fetch
 COPY . .
 COPY --from=web-builder /src/webui/static ./webui/static
 RUN mkdir -p /app/runtime/logs

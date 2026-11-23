@@ -1241,6 +1241,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             "otp_timeout": cfg["otp_timeout"],
             "allow_existing_login": True,
             "want_2fa": cfg["want_2fa"],
+            "browser_fallback": cfg.get("browser_fallback", True),
             "workflow_scope": "integration",
         })
         _set_job(run_id=run_id, stage="waiting_registration")

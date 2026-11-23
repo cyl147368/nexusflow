@@ -109,6 +109,28 @@ App 专用密码用于读取 iCloud 收件箱。Cookie 用于管理 Hide My Emai
 配置代理、OTP 超时、需要保存的 Token，以及是否注册后绑定 TOTP 2FA。
 然后点击“一键启动完整流程”。
 
+注册执行采用“协议优先、浏览器只补关键步骤”的混合模式：
+
+```text
+curl_cffi 纯协议
+  -> Cloudflare 403 / Sentinel 失败 / 409 invalid_state
+  -> Camoufox（优先）或 CloakBrowser / Playwright Chromium
+  -> 完成人机挑战、提交邮箱、必要时提交 OTP
+  -> 导回 Cookie、oai-did、UA 与落地状态
+  -> 继续用协议完成建号、Session 和 Codex OAuth Token
+```
+
+可在「单次注册」「自动跑号」「一体化启动」页面关闭该功能，也可用环境变量控制：
+
+```dotenv
+BROWSER_FALLBACK_ENABLED=1
+BROWSER_FALLBACK_DRIVER=auto      # auto / camoufox / cloak / playwright
+BROWSER_FALLBACK_MAX_ATTEMPTS=2
+BROWSER_FALLBACK_TIMEOUT=75
+```
+
+浏览器回退有独立并发锁，默认同一时间只运行一个浏览器实例，避免批量注册时把服务器内存打满。
+
 主项目原有的「邮箱列表」「注册结果」「运行记录」「代理池」
 「接码配置」「自动导出」页面全部保留。
 

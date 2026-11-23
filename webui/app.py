@@ -134,11 +134,14 @@ class RegisterReq(BaseModel):
     proxy: str = ""
     otp_timeout: int = 10
     allow_existing_login: bool = True
-    # 注册成功后自动绑定 TOTP 2FA。前端两个页面都**默认开**（主人要求每个号都绑）。
-    # 这里的 default 保持 False —— 它只在「调用方没传这个字段」时生效，是给旧前端
-    # 缓存 / 直接打 API 的保守兜底：漏传时宁可不绑，也不替调用方做一个不可逆的决定。
-    # 真实默认值由前端 form store 的 want2fa / autoWant2fa 决定。
+    # 注册成功后自动绑定 TOTP 2FA。前端两个页面都**默认关**（与密码开关一致）。
+    # 这里的 default 保持 False：漏传字段时保守不绑（绑定不可逆）。
     want_2fa: bool = False
+    # 注册时设置密码。默认 False = 不设密码，走 passwordless 注册（邮箱 OTP）。
+    # 关闭后 2FA 慢路径（需密码重登）会跳过，快路径（access_token）仍可用。
+    want_password: bool = False
+    # 纯协议遇到 CF/Sentinel/409 时，用 Camoufox/Cloak/Playwright 只补关键步骤。
+    browser_fallback: bool = True
 
 
 class RecoveryReq(BaseModel):
@@ -460,6 +463,8 @@ def api_register(req: RegisterReq):
         "allow_existing_login": req.allow_existing_login,
         "want_2fa": req.want_2fa,
         "workflow_scope": workflow_scope,
+        "want_password": req.want_password,
+        "browser_fallback": req.browser_fallback,
     }
     run_id = registrar.start_registration(account, options)
     logger.info(f"[run] {run_id} -> {account['email']} (mail_source={mail_source})")
@@ -1760,11 +1765,12 @@ class AutoLoopStartReq(BaseModel):
     allow_existing_login: bool = True
     cool_down_seconds: float = 3.0  # 每个 worker 跑完后冷却（防风控）
     target_count: int = 0        # 目标成功数（0=不限量，达标自动停止）
-    # 批量页已放开关且**默认开**（主人要求每个号都绑）。
-    # 这里的 default 仍保持 False —— 它只在「前端没传这个字段」时生效，
-    # 是给旧前端缓存 / 直接打 API 的保守兜底：漏传时宁可不绑，也不要
-    # 替调用方做一个不可逆的决定。真实默认值由 AutoLoop.vue 的 autoWant2fa 决定。
+    # 批量页开关**默认关**（与单次页一致）。
+    # default 保持 False：漏传字段时宁可不绑，也不替调用方做不可逆决定。
     want_2fa: bool = False
+    # 注册时设置密码，默认 False = 无密码（passwordless 注册）。
+    want_password: bool = False
+    browser_fallback: bool = True
 
 
 @app.post("/api/auto/start")
@@ -1863,6 +1869,7 @@ class IntegrationConfigReq(BaseModel):
     want_session_token: Optional[bool] = None
     want_refresh_token: Optional[bool] = None
     want_2fa: Optional[bool] = None
+    browser_fallback: Optional[bool] = None
     continuous: Optional[bool] = None
     target_count: Optional[int] = None
     cool_down_seconds: Optional[int] = None

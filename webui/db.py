@@ -1616,6 +1616,7 @@ def get_integration_config() -> dict:
         "want_session_token": get_setting("nx_want_session_token", "1") in ("1", "true"),
         "want_refresh_token": get_setting("nx_want_refresh_token", "1") in ("1", "true"),
         "want_2fa": get_setting("nx_want_2fa", "0") in ("1", "true"),
+        "browser_fallback": get_setting("nx_browser_fallback", "1") in ("1", "true"),
         "continuous": get_setting("nx_continuous", "1") in ("1", "true"),
         "target_count": int(get_setting("nx_target_count", "0") or 0),
         "cool_down_seconds": int(get_setting("nx_cool_down_seconds", "30") or 30),
@@ -1648,7 +1649,13 @@ def get_integration_internal_config() -> dict:
     cfg["payment_timeout"] = max(
         10, min(180, int(get_setting("nx_payment_timeout", "45") or 45))
     )
-    for key in ("want_access_token", "want_session_token", "want_refresh_token", "want_2fa"):
+    for key in (
+        "want_access_token",
+        "want_session_token",
+        "want_refresh_token",
+        "want_2fa",
+        "browser_fallback",
+    ):
         cfg[key] = get_setting(f"nx_{key}", "0" if key == "want_2fa" else "1") in (
             "1", "true", "yes", "on",
         )
@@ -1686,6 +1693,7 @@ def save_integration_config(data: dict) -> None:
         set_setting("nx_imap_ssl", "1" if enabled else "0")
     for key in (
         "want_access_token", "want_session_token", "want_refresh_token", "want_2fa",
+        "browser_fallback",
         "continuous", "auto_qualify",
     ):
         if key in data:
