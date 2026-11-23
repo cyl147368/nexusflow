@@ -64,6 +64,12 @@ _CONTINUE_TEXTS = (
     "注册",
 )
 
+_CHROMIUM_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/146.0.0.0 Safari/537.36"
+)
+
 
 def classify_auth_stage(url: str) -> str:
     """Map an auth landing URL to the same page types used by AuthFlow."""
@@ -272,6 +278,7 @@ class BrowserFallback:
         kwargs: dict[str, Any] = {
             "headless": self.headless,
             "humanize": True,
+            "i_know_what_im_doing": True,
         }
         proxy = playwright_proxy(self.proxy)
         if proxy:
@@ -333,8 +340,10 @@ class BrowserFallback:
                     "viewport": {"width": 1366, "height": 768},
                     "locale": "en-US",
                 }
-                if self.user_agent:
+                if "Chrome/" in self.user_agent and "HeadlessChrome" not in self.user_agent:
                     context_kwargs["user_agent"] = self.user_agent
+                else:
+                    context_kwargs["user_agent"] = _CHROMIUM_USER_AGENT
                 proxy = playwright_proxy(self.proxy)
                 if proxy:
                     context_kwargs["proxy"] = proxy

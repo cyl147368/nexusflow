@@ -1938,6 +1938,26 @@ class AuthFlow:
     def _apply_browser_result(self, result: BrowserFallbackResult, intent: str = "signup") -> None:
         """Merge browser cookies and state back into the protocol client."""
         self._last_browser_fallback = result
+        if result.driver in {"playwright", "cloak"}:
+            # A Chromium CF clearance cookie is tied to its Chromium UA/TLS
+            # family. Recreate the protocol session before importing the
+            # browser jar so the next request does not pair it with Firefox.
+            try:
+                self.session.close()
+            except Exception:
+                pass
+            self._impersonate_candidates = [
+                "chrome150",
+                "chrome146",
+                "chrome142",
+                "chrome136",
+            ]
+            self._impersonate_idx = 0
+            self.session = create_http_session(
+                proxy=self.config.proxy,
+                impersonate=self._impersonate_candidates[0],
+                user_agent=result.user_agent or self._ua,
+            )
         if result.user_agent:
             self._ua = result.user_agent
             try:
