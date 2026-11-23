@@ -139,6 +139,15 @@ class AuthFlowDeviceTest(unittest.TestCase):
             "https://auth.openai.com/api/accounts/password/send-otp",
             [url for url, _ in flow.session.post_urls],
         )
+        send_request = next(
+            kwargs
+            for url, kwargs in flow.session.post_urls
+            if url == "https://auth.openai.com/api/accounts/password/send-otp"
+        )
+        self.assertEqual(
+            send_request["json"],
+            {"username": "recover@example.com"},
+        )
         self.assertIn(
             "https://auth.openai.com/api/accounts/password/reset",
             [url for url, _ in flow.session.post_urls],

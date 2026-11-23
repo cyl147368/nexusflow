@@ -3791,7 +3791,7 @@ class AuthFlow:
         sent = self.session.post(
             "https://auth.openai.com/api/accounts/password/send-otp",
             headers=headers,
-            json={},
+            json={"username": email},
             timeout=30,
         )
         self._trace_http("reset_password_send_otp", sent)
