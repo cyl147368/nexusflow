@@ -79,7 +79,7 @@ class AuthFlowDeviceTest(unittest.TestCase):
             ),
             patch.object(flow, "auth_oauth_init", return_value="device-id"),
             patch.object(flow, "get_sentinel_token", return_value="login-token"),
-            patch.object(flow, "authorize_continue", return_value={}),
+            patch.object(flow, "authorize_continue", return_value={}) as authorize_continue,
             patch.object(
                 flow,
                 "verify_otp",
@@ -101,6 +101,7 @@ class AuthFlowDeviceTest(unittest.TestCase):
             )
 
         check_proxy.assert_called_once_with()
+        authorize_continue.assert_not_called()
         self.assertEqual(result["mode"], "reset")
         self.assertIn(
             "https://auth.openai.com/api/accounts/password/send-otp",

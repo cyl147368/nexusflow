@@ -3718,16 +3718,7 @@ class AuthFlow:
 
         csrf_token = self.get_csrf_token()
         auth_url = self.get_auth_url(csrf_token, email=email)
-        device_id = self.auth_oauth_init(auth_url)
-        login_sentinel = self.get_sentinel_token(device_id)
-        self._is_existing_account = True
-        self.authorize_continue(
-            email=email,
-            sentinel_token=login_sentinel,
-            screen_hint="login",
-            referer="https://auth.openai.com/log-in",
-            trace_step="password_reset_authorize_continue",
-        )
+        self.auth_oauth_init(auth_url)
         reset_page = self.session.get(
             "https://auth.openai.com/reset-password?"
             + urlencode({"username": email}),
