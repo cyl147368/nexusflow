@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from . import db, export_formats, integration, payment_detector, registrar, system_update  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
+from .plus_scheduler import CONTROLLER as PLUS_SCHEDULER  # noqa: E402
 from .exporter import _decode_jwt_payload, _get_auth  # noqa: E402
 from mail_providers import (  # noqa: E402
     ImportValidationError,
@@ -83,6 +84,15 @@ def resume_integration_job():
     registrar.fail_orphaned_runs()
     integration.resume_pending()
     registrar.resume_recovery_batches()
+    PLUS_SCHEDULER.start(
+        lambda emails, proxy, workers: api_check_plus_fast(
+            CheckPlusReq(
+                emails=emails,
+                proxy=proxy,
+                workers=workers,
+            )
+        )
+    )
 
 
 @app.middleware("http")
@@ -1192,6 +1202,15 @@ def api_update_credentials(req: UpdateCredReq):
 class CheckPlusReq(BaseModel):
     emails: list[str] = Field(..., description="要检查的邮箱列表")
     proxy: str = Field("", description="查询代理，留空直连")
+    workers: int = Field(3, ge=1, le=6, description="并行检测数")
+
+
+class PlusScheduleReq(BaseModel):
+    enabled: Optional[bool] = None
+    interval_hours: Optional[float] = Field(None, ge=0.25, le=168)
+    scope: Optional[str] = None
+    batch_size: Optional[int] = Field(None, ge=1, le=100)
+    workers: Optional[int] = Field(None, ge=1, le=6)
 
 
 class RefreshAccessTokensReq(BaseModel):
@@ -1727,9 +1746,10 @@ def api_check_plus_fast(req: CheckPlusReq):
                 pass
 
     notes = []
+    used_workers = 0
     if jobs:
-        workers = min(6, max(1, len(jobs)))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        used_workers = min(req.workers, max(1, len(jobs)))
+        with ThreadPoolExecutor(max_workers=used_workers) as pool:
             for email, info, note in pool.map(check_job, jobs):
                 results[email] = info
                 if note:
@@ -1747,8 +1767,30 @@ def api_check_plus_fast(req: CheckPlusReq):
         "ok": True,
         "results": results,
         "note": "；".join(dict.fromkeys(notes)),
-        "workers": min(6, max(1, len(jobs))),
+        "workers": used_workers,
     }
+
+
+@app.get("/api/plus/schedule")
+def api_plus_schedule_status():
+    return {"ok": True, "schedule": PLUS_SCHEDULER.status()}
+
+
+@app.put("/api/plus/schedule")
+def api_plus_schedule_update(req: PlusScheduleReq):
+    payload = req.model_dump(exclude_none=True)
+    from .plus_scheduler import save_schedule_config
+
+    save_schedule_config(payload)
+    return {"ok": True, "schedule": PLUS_SCHEDULER.status()}
+
+
+@app.post("/api/plus/schedule/run")
+def api_plus_schedule_run():
+    result = PLUS_SCHEDULER.run_now()
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("message") or result.get("error") or "启动失败")
+    return result
 
 
 # ──────────────────────── auto-loop ────────────────────────

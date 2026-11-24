@@ -53,6 +53,15 @@ export const exportRegistered = (payload) => http.post('/api/registered/export',
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus_fast', { emails, proxy })
 
+export const getPlusSchedule = () =>
+  http.get('/api/plus/schedule')
+
+export const updatePlusSchedule = (payload) =>
+  http.put('/api/plus/schedule', payload)
+
+export const runPlusScheduleNow = () =>
+  http.post('/api/plus/schedule/run')
+
 export const refreshAccessTokens = (emails, proxy = '') =>
   http.post('/api/registered/refresh_at', { emails, proxy })
 

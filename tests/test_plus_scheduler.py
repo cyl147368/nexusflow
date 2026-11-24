@@ -1,0 +1,137 @@
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from webui import db
+from webui.plus_scheduler import (
+    PlusScheduler,
+    get_schedule_config,
+    save_schedule_config,
+)
+
+
+class PlusSchedulerTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        os.environ["NEXUSFLOW_DB_PATH"] = str(Path(self.temp.name) / "test.db")
+        db.DB_PATH = Path(self.temp.name) / "test.db"
+        db.init_db()
+        db.set_setting("plus_schedule_enabled", "1")
+
+    def tearDown(self):
+        self.temp.cleanup()
+        os.environ.pop("NEXUSFLOW_DB_PATH", None)
+
+    def test_default_schedule_is_three_hours_for_integration(self):
+        config = get_schedule_config()
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["interval_hours"], 3.0)
+        self.assertEqual(config["scope"], "integration")
+        self.assertEqual(config["workers"], 3)
+
+    def test_schedule_settings_are_persisted(self):
+        updated = save_schedule_config(
+            {
+                "enabled": False,
+                "interval_hours": 4.5,
+                "scope": "all",
+                "batch_size": 40,
+                "workers": 2,
+            }
+        )
+        self.assertFalse(updated["enabled"])
+        self.assertEqual(updated["interval_hours"], 4.5)
+        self.assertEqual(updated["scope"], "all")
+        self.assertEqual(get_schedule_config(), updated)
+
+    def test_cycle_uses_proxy_and_records_counts(self):
+        db.replace_proxy_pool(["socks5://proxy.example:1080"])
+        db.save_registered(
+            {
+                "email": "one@example.com",
+                "access_token": "at-one",
+                "session_token": "st-one",
+                "workflow_scope": "integration",
+            }
+        )
+        db.save_registered(
+            {
+                "email": "two@example.com",
+                "access_token": "at-two",
+                "session_token": "st-two",
+                "workflow_scope": "integration",
+            }
+        )
+        calls = []
+
+        def runner(emails, proxy, workers):
+            calls.append((emails, proxy, workers))
+            return {
+                "results": {
+                    email: {"status": "plus_eligible", "label": "可领Plus试用"}
+                    for email in emails
+                }
+            }
+
+        scheduler = PlusScheduler()
+        scheduler._runner = runner
+        result = scheduler._run_cycle()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checked"], 2)
+        self.assertEqual(result["plus"], 2)
+        self.assertEqual(calls[0][1], "socks5://proxy.example:1080")
+        self.assertEqual(calls[0][2], 3)
+
+    def test_failed_proxy_is_not_reused_in_the_same_cycle(self):
+        db.replace_proxy_pool([
+            "socks5://bad.example:1080",
+            "socks5://good.example:1080",
+        ])
+        for index in range(3):
+            db.save_registered(
+                {
+                    "email": f"user{index}@example.com",
+                    "access_token": f"at-{index}",
+                    "session_token": f"st-{index}",
+                    "workflow_scope": "integration",
+                }
+            )
+        save_schedule_config({"batch_size": 1, "workers": 1})
+        calls = []
+
+        def runner(emails, proxy, workers):
+            calls.append(proxy)
+            if "bad" in proxy:
+                return {
+                    "results": {
+                        email: {"status": "error", "label": "网络失败"}
+                        for email in emails
+                    }
+                }
+            return {
+                "results": {
+                    email: {"status": "plus_eligible", "label": "可领Plus试用"}
+                    for email in emails
+                }
+            }
+
+        scheduler = PlusScheduler()
+        scheduler._runner = runner
+        result = scheduler._run_cycle()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [
+            "socks5://bad.example:1080",
+            "socks5://good.example:1080",
+            "socks5://good.example:1080",
+        ])
+        self.assertGreater(
+            db.get_proxy_health()["socks5://bad.example:1080"]["cooldown_until"],
+            0,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

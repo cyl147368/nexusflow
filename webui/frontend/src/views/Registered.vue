@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onActivated, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -7,6 +7,7 @@ import {
   getRegistered, deleteRegistered,
   bulkDeleteRegistered, bulkDeleteAccounts, checkPlus, refreshAccessTokens,
   listExportFormats, exportRegistered, updateCredentials,
+  getPlusSchedule, updatePlusSchedule, runPlusScheduleNow as runPlusScheduleNowApi,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
 import { useFormStore, proxyText } from '@/stores/form'
@@ -36,6 +37,20 @@ const checking = ref(false)
 const refreshingAT = ref(false)
 const checkResult = ref('')
 const currentPlusTotal = ref(null)
+const plusSchedule = ref({
+  enabled: true,
+  interval_hours: 3,
+  scope: 'integration',
+  batch_size: 25,
+  workers: 3,
+  running: false,
+  last_status: 'idle',
+  last_counts: {},
+  next_run_at: 0,
+})
+const scheduleSaving = ref(false)
+const scheduleStarting = ref(false)
+let scheduleTimer = null
 
 const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
@@ -52,6 +67,19 @@ function workflowLabel(scope) {
     integration: '一体化流程',
   }[scope] || '未分类'
 }
+function scheduleTime(value) {
+  const timestamp = Number(value || 0)
+  return timestamp > 0 ? fmtTime(timestamp) : '—'
+}
+const plusScheduleStatusText = computed(() => {
+  if (plusSchedule.value.running) return '检测中'
+  return {
+    ok: '上次完成',
+    failed: '上次失败',
+    running: '检测中',
+    idle: '等待首次运行',
+  }[plusSchedule.value.last_status] || plusSchedule.value.last_status || '等待首次运行'
+})
 function credentialSourceLabel(row) {
   return row.credential_source_label || (
     row.credential_source === 'recovery' ? '邮箱验证码找回' : '自动注册'
@@ -98,6 +126,47 @@ async function loadPlusTotal() {
     currentPlusTotal.value = Number(result.total || 0)
   } catch (_) {
     currentPlusTotal.value = null
+  }
+}
+
+async function loadPlusSchedule() {
+  try {
+    const result = await getPlusSchedule()
+    plusSchedule.value = { ...plusSchedule.value, ...(result.schedule || {}) }
+  } catch (_) {
+    // The table remains usable even if schedule status is temporarily unavailable.
+  }
+}
+
+async function savePlusSchedule() {
+  scheduleSaving.value = true
+  try {
+    const result = await updatePlusSchedule({
+      enabled: plusSchedule.value.enabled,
+      interval_hours: plusSchedule.value.interval_hours,
+      scope: plusSchedule.value.scope,
+      batch_size: plusSchedule.value.batch_size,
+      workers: plusSchedule.value.workers,
+    })
+    plusSchedule.value = { ...plusSchedule.value, ...(result.schedule || {}) }
+    ElMessage.success(plusSchedule.value.enabled ? '定时 Plus 检测已保存' : '定时 Plus 检测已关闭')
+  } catch (e) {
+    ElMessage.error('保存定时检测失败: ' + e.message)
+  } finally {
+    scheduleSaving.value = false
+  }
+}
+
+async function runPlusScheduleNow() {
+  scheduleStarting.value = true
+  try {
+    const result = await runPlusScheduleNowApi()
+    ElMessage.success(result.message || 'Plus 检测已启动')
+    await loadPlusSchedule()
+  } catch (e) {
+    ElMessage.error('启动检测失败: ' + (e.response?.data?.detail || e.message))
+  } finally {
+    scheduleStarting.value = false
   }
 }
 
@@ -445,12 +514,63 @@ async function saveEdit() {
 
 watch(page, () => load())
 watch(dataVersion, () => load())
-onActivated(() => load())
+onActivated(() => {
+  load()
+  loadPlusSchedule()
+  if (scheduleTimer) clearInterval(scheduleTimer)
+  scheduleTimer = setInterval(loadPlusSchedule, 5000)
+})
+onDeactivated(() => {
+  if (scheduleTimer) clearInterval(scheduleTimer)
+  scheduleTimer = null
+})
 </script>
 <template>
   <div class="page">
     <el-card shadow="never">
       <template #header><span class="section-title" style="margin: 0">注册结果</span></template>
+
+      <div class="plus-schedule-panel">
+        <div class="plus-schedule-main">
+          <div>
+            <b>定时 Plus 检测</b>
+            <span class="hint">只读查询账号状态和 Plus 优惠券，不领券、不创建支付。</span>
+          </div>
+          <el-tag :type="plusSchedule.running ? 'warning' : (plusSchedule.last_status === 'failed' ? 'danger' : 'success')">
+            {{ plusScheduleStatusText }}
+          </el-tag>
+          <el-switch v-model="plusSchedule.enabled" @change="savePlusSchedule" />
+        </div>
+        <el-space wrap :size="12">
+          <span>周期</span>
+          <el-input-number
+            v-model="plusSchedule.interval_hours"
+            :min="0.25" :max="168" :step="0.5" :precision="2"
+            style="width: 130px" @change="savePlusSchedule"
+          />
+          <span>小时</span>
+          <el-select v-model="plusSchedule.scope" style="width: 140px" @change="savePlusSchedule">
+            <el-option label="一体化流程" value="integration" />
+            <el-option label="原有流程" value="legacy" />
+            <el-option label="全部流程" value="all" />
+          </el-select>
+          <span>并发</span>
+          <el-input-number
+            v-model="plusSchedule.workers"
+            :min="1" :max="6"
+            style="width: 100px" @change="savePlusSchedule"
+          />
+          <el-button :loading="scheduleStarting" @click="runPlusScheduleNow">立即检测</el-button>
+        </el-space>
+        <div class="hint plus-schedule-meta">
+          下次 {{ scheduleTime(plusSchedule.next_run_at) }}
+          · 上次完成 {{ scheduleTime(plusSchedule.last_finished_at) }}
+          <template v-if="plusSchedule.last_counts?.checked">
+            · 已查 {{ plusSchedule.last_counts.checked }}，Plus {{ plusSchedule.last_counts.plus || 0 }}，失败 {{ plusSchedule.last_counts.errors || 0 }}
+          </template>
+          <span v-if="plusSchedule.last_error" class="schedule-error"> · {{ plusSchedule.last_error }}</span>
+        </div>
+      </div>
 
       <el-space wrap style="margin-bottom: 12px">
         <el-button @click="load(false)"><el-icon><Refresh /></el-icon>刷新</el-button>
@@ -725,6 +845,27 @@ onActivated(() => load())
   transition: opacity 0.12s;
 }
 :deep(.cell-copy:hover .ico) { opacity: 0.65; }
+.plus-schedule-panel {
+  margin-bottom: 14px;
+  padding: 13px 15px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 10px;
+  background: var(--el-color-primary-light-9);
+}
+.plus-schedule-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.plus-schedule-main > div {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+.plus-schedule-meta { margin-top: 9px; }
+.schedule-error { color: var(--el-color-danger); }
 </style>
 
 <!-- 非 scoped：ElMessageBox 是挂到 body 上的，不在本组件的 scope 属性范围内，

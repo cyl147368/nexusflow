@@ -168,6 +168,14 @@ BROWSER_FALLBACK_TIMEOUT=75
 MoMo 和 UPI 分别需要越南、印度地区出口代理。服务器上已保留完整 Python
 支付核心、Node.js Sentinel 与 Playwright Chromium；Windows WPF 部分未集成。
 
+「注册结果」页还内置定时 Plus 状态检测，默认每 3 小时执行一次：
+
+- 默认只检测「一体化流程」中带 Access Token 的账号。
+- 并发 3，每批 25 个账号，批次间随机等待，避免瞬时请求峰值。
+- 自动轮换代理池，跳过冷却中的代理；没有可用代理时停止本轮，不用服务器真实 IP。
+- 只调用账号状态和 Plus 优惠券只读接口，不领券、不创建 Checkout、不提交支付。
+- 定时配置、上次结果和下次运行时间保存在 SQLite，容器重启后继续执行。
+
 ## 本地开发
 
 ### 主 WebUI

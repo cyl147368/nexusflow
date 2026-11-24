@@ -15,6 +15,7 @@ class IntegrationApiTest(unittest.TestCase):
         os.environ.pop("NEXUSFLOW_BASIC_PASSWORD", None)
         os.environ["MAILHUB_ADMIN_TOKEN"] = "mail-token"
         os.environ["ICLOUD_PRIME_API_TOKEN"] = "icloud-token"
+        os.environ["NEXUSFLOW_DISABLE_SCHEDULERS"] = "1"
 
         from fastapi.testclient import TestClient
         from webui import db
@@ -23,6 +24,7 @@ class IntegrationApiTest(unittest.TestCase):
 
         db.DB_PATH = Path(self.temp.name) / "test.db"
         db.init_db()
+        db.set_setting("plus_schedule_enabled", "1")
         integration._job = None
         integration._stop_event.clear()
         integration._pause_event.clear()
@@ -30,6 +32,7 @@ class IntegrationApiTest(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+        os.environ.pop("NEXUSFLOW_DISABLE_SCHEDULERS", None)
 
     def test_config_secrets_are_masked(self):
         response = self.client.get("/api/integration/config")
@@ -39,6 +42,30 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(config["icloud_token"], "***")
         self.assertTrue(config["want_password"])
         self.assertEqual(config["registration_password"], "")
+
+    def test_plus_schedule_defaults_and_updates(self):
+        response = self.client.get("/api/plus/schedule")
+        self.assertEqual(response.status_code, 200)
+        schedule = response.json()["schedule"]
+        self.assertTrue(schedule["enabled"])
+        self.assertEqual(schedule["interval_hours"], 3)
+        self.assertEqual(schedule["scope"], "integration")
+
+        update = self.client.put(
+            "/api/plus/schedule",
+            json={
+                "interval_hours": 4,
+                "scope": "legacy",
+                "workers": 2,
+                "batch_size": 30,
+            },
+        )
+        self.assertEqual(update.status_code, 200)
+        saved = update.json()["schedule"]
+        self.assertEqual(saved["interval_hours"], 4)
+        self.assertEqual(saved["scope"], "legacy")
+        self.assertEqual(saved["workers"], 2)
+        self.assertEqual(saved["batch_size"], 30)
 
     def test_config_can_be_saved_without_overwriting_secrets(self):
         response = self.client.post(
