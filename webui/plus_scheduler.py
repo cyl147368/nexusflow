@@ -106,6 +106,7 @@ def save_schedule_config(data: dict) -> dict:
 class PlusScheduler:
     def __init__(self):
         self._runner: Optional[Callable[[list[str], str, int], dict]] = None
+        self._proxy_selector: Optional[Callable[[], str]] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._run_lock = threading.Lock()
@@ -207,23 +208,27 @@ class PlusScheduler:
                 logger.warning("[plus-scheduler] loop error: %s", exc)
                 self._stop.wait(30)
 
-    def _proxy_candidates(self) -> list[str]:
-        health = db.get_proxy_health()
-        now = time.time()
-        proxies = []
-        for proxy in db.list_proxy_pool():
-            state = health.get(proxy, {})
-            if _as_float(state.get("cooldown_until"), 0) > now:
-                continue
-            proxies.append(proxy)
-        if not proxies:
-            configured = db.get_integration_internal_config().get("proxy") or ""
-            if configured:
-                configured = str(configured).strip()
-                state = health.get(configured, {})
-                if _as_float(state.get("cooldown_until"), 0) <= now:
-                    proxies.append(configured)
-        return proxies
+    def _select_proxy(self) -> str:
+        if self._proxy_selector:
+            proxy = str(self._proxy_selector() or "").strip()
+        else:
+            # Reuse the same ChatGPT preflight as the integrated registration
+            # flow. Pool entries are frequently expired rotating SOCKS5
+            # identities; checking health alone misses them and produces
+            # batches where every account fails with curl 97.
+            from . import integration
+
+            selection = integration._select_registration_proxy(
+                db.get_integration_internal_config(),
+                max_probe=36,
+                workers=6,
+            )
+            proxy = str(selection.get("proxy") or "").strip()
+        if not proxy:
+            raise RuntimeError(
+                "没有通过 ChatGPT 预检的代理；为避免使用服务器真实 IP，本轮检测已跳过"
+            )
+        return proxy
 
     def _run_cycle(self) -> dict:
         if self._running or self._runner is None:
@@ -264,29 +269,32 @@ class PlusScheduler:
                 self._last_counts = counts
                 return {"ok": True, **counts}
 
-            proxies = self._proxy_candidates()
-            if not proxies:
-                raise RuntimeError(
-                    "没有可用代理；为避免使用服务器真实 IP，本轮 Plus 检测已跳过"
-                )
-
             batch_size = cfg["batch_size"]
-            proxy_index = 0
             consecutive_batch_errors = 0
+            current_proxy = ""
+            last_batch_note = ""
             for offset in range(0, len(emails), batch_size):
                 if self._stop.is_set():
                     counts["stopped"] = True
                     break
-                if not proxies:
-                    raise RuntimeError(
-                        "本轮可用代理均已进入冷却；为避免使用服务器真实 IP，检测已停止"
-                    )
+                if not current_proxy:
+                    try:
+                        current_proxy = self._select_proxy()
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "没有可用代理，Plus 检测已停止"
+                            f"（已检测 {counts['checked']} 个）：{exc}"
+                        ) from exc
                 batch = emails[offset:offset + batch_size]
-                proxy_position = proxy_index % len(proxies)
-                proxy = proxies[proxy_position]
+                proxy = current_proxy
                 try:
                     response = self._runner(batch, proxy, cfg["workers"])
                     results = response.get("results", {}) if isinstance(response, dict) else {}
+                    note = (
+                        str(response.get("note") or "").strip()
+                        if isinstance(response, dict)
+                        else ""
+                    )
                     error_count = 0
                     for info in results.values():
                         status = str((info or {}).get("status") or "")
@@ -303,39 +311,62 @@ class PlusScheduler:
                             error_count += 1
                             counts["errors"] += 1
                     if error_count * 3 > len(batch):
+                        error_text = (
+                            note
+                            or f"批次网络错误 {error_count}/{len(batch)}"
+                        )
                         db.mark_proxy_failure(
                             proxy,
-                            f"Plus scheduled check batch errors={error_count}/{len(batch)}",
+                            error_text,
                             cooldown_seconds=900,
                         )
-                        proxies.pop(proxy_position)
+                        last_batch_note = error_text
+                        current_proxy = ""
                         consecutive_batch_errors += 1
                     else:
                         db.mark_proxy_success(proxy)
-                        proxy_index = proxy_position + 1
                         consecutive_batch_errors = 0
                 except Exception as exc:
                     consecutive_batch_errors += 1
                     counts["errors"] += len(batch)
+                    error_text = f"{type(exc).__name__}: {exc}"
+                    last_batch_note = error_text
                     db.mark_proxy_failure(
                         proxy,
-                        f"Plus scheduled check: {type(exc).__name__}: {exc}",
+                        error_text,
                         cooldown_seconds=900,
                     )
-                    proxies.pop(proxy_position)
+                    current_proxy = ""
+                    try:
+                        from .integration import _redact_proxy
+
+                        proxy_label = _redact_proxy(proxy)
+                    except Exception:
+                        proxy_label = "代理"
                     logger.warning(
                         "[plus-scheduler] batch failed via %s: %s",
-                        proxy,
+                        proxy_label,
                         exc,
                     )
                 counts["batches"] += 1
-                if consecutive_batch_errors >= 2:
+                if consecutive_batch_errors >= 3:
                     raise RuntimeError(
-                        "连续两个 Plus 检测批次失败，已中止并准备退避重试"
+                        "连续三个 Plus 检测批次失败，已中止并准备退避重试"
                     )
                 if offset + batch_size < len(emails):
                     time.sleep(random.uniform(1.2, 2.8))
 
+            conclusive = (
+                counts["plus"]
+                + counts["free"]
+                + counts["banned"]
+                + counts["token_invalid"]
+            )
+            if counts["errors"] and conclusive == 0:
+                raise RuntimeError(
+                    last_batch_note
+                    or "本轮账号均未得到有效 Plus 状态，检测失败"
+                )
             db.set_setting("plus_schedule_last_status", "ok")
             db.set_setting(
                 "plus_schedule_last_counts",

@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from webui import db
 from webui.plus_scheduler import (
@@ -76,6 +77,7 @@ class PlusSchedulerTest(unittest.TestCase):
 
         scheduler = PlusScheduler()
         scheduler._runner = runner
+        scheduler._proxy_selector = lambda: "socks5://proxy.example:1080"
         result = scheduler._run_cycle()
 
         self.assertTrue(result["ok"])
@@ -119,7 +121,13 @@ class PlusSchedulerTest(unittest.TestCase):
 
         scheduler = PlusScheduler()
         scheduler._runner = runner
-        result = scheduler._run_cycle()
+        proxies = iter([
+            "socks5://bad.example:1080",
+            "socks5://good.example:1080",
+        ])
+        scheduler._proxy_selector = lambda: next(proxies)
+        with patch("webui.plus_scheduler.time.sleep", return_value=None):
+            result = scheduler._run_cycle()
 
         self.assertTrue(result["ok"])
         self.assertEqual(calls, [
@@ -131,6 +139,58 @@ class PlusSchedulerTest(unittest.TestCase):
             db.get_proxy_health()["socks5://bad.example:1080"]["cooldown_until"],
             0,
         )
+
+    def test_cycle_skips_multiple_rejected_proxies_before_succeeding(self):
+        for index in range(5):
+            db.save_registered(
+                {
+                    "email": f"retry{index}@example.com",
+                    "access_token": f"at-retry-{index}",
+                    "session_token": f"st-retry-{index}",
+                    "workflow_scope": "integration",
+                }
+            )
+        save_schedule_config({"batch_size": 1, "workers": 1})
+        calls = []
+
+        def runner(emails, proxy, workers):
+            calls.append(proxy)
+            if "good" not in proxy:
+                return {
+                    "results": {
+                        email: {"status": "error", "label": "网络失败"}
+                        for email in emails
+                    },
+                    "note": "代理认证被拒（SOCKS5 97）",
+                }
+            return {
+                "results": {
+                    email: {"status": "plus_eligible", "label": "可领Plus试用"}
+                    for email in emails
+                }
+            }
+
+        scheduler = PlusScheduler()
+        scheduler._runner = runner
+        proxies = iter([
+            "socks5://bad-1.example:1080",
+            "socks5://bad-2.example:1080",
+            "socks5://good.example:1080",
+        ])
+        scheduler._proxy_selector = lambda: next(proxies)
+        with patch("webui.plus_scheduler.time.sleep", return_value=None):
+            result = scheduler._run_cycle()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checked"], 5)
+        self.assertEqual(result["plus"], 3)
+        self.assertEqual(calls, [
+            "socks5://bad-1.example:1080",
+            "socks5://bad-2.example:1080",
+            "socks5://good.example:1080",
+            "socks5://good.example:1080",
+            "socks5://good.example:1080",
+        ])
 
 
 if __name__ == "__main__":
