@@ -50,12 +50,14 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertTrue(schedule["enabled"])
         self.assertEqual(schedule["interval_hours"], 3)
         self.assertEqual(schedule["scope"], "integration")
+        self.assertEqual(schedule["egress_mode"], "direct")
 
         update = self.client.put(
             "/api/plus/schedule",
             json={
                 "interval_hours": 4,
                 "scope": "legacy",
+                "egress_mode": "proxy",
                 "workers": 2,
                 "batch_size": 30,
             },
@@ -64,6 +66,7 @@ class IntegrationApiTest(unittest.TestCase):
         saved = update.json()["schedule"]
         self.assertEqual(saved["interval_hours"], 4)
         self.assertEqual(saved["scope"], "legacy")
+        self.assertEqual(saved["egress_mode"], "proxy")
         self.assertEqual(saved["workers"], 2)
         self.assertEqual(saved["batch_size"], 30)
 

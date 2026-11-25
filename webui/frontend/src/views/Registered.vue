@@ -10,7 +10,7 @@ import {
   getPlusSchedule, updatePlusSchedule, runPlusScheduleNow as runPlusScheduleNowApi,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
-import { useFormStore, proxyText } from '@/stores/form'
+import { useFormStore } from '@/stores/form'
 import { useProxyStore } from '@/stores/proxy'
 import { useRuntimeStore } from '@/stores/runtime'
 import StatusDot from '@/components/StatusDot.vue'
@@ -41,6 +41,7 @@ const plusSchedule = ref({
   enabled: true,
   interval_hours: 3,
   scope: 'integration',
+  egress_mode: 'direct',
   batch_size: 25,
   workers: 3,
   running: false,
@@ -145,6 +146,7 @@ async function savePlusSchedule() {
       enabled: plusSchedule.value.enabled,
       interval_hours: plusSchedule.value.interval_hours,
       scope: plusSchedule.value.scope,
+      egress_mode: plusSchedule.value.egress_mode,
       batch_size: plusSchedule.value.batch_size,
       workers: plusSchedule.value.workers,
     })
@@ -200,7 +202,7 @@ async function doCheck(mode) {
     for (let start = 0; start < emails.length; start += batchSize) {
       const batch = emails.slice(start, start + batchSize)
       checkResult.value = `检查中... ${Math.min(start + batch.length, emails.length)}/${emails.length}`
-      const response = await checkPlus(batch, proxyText(form.value))
+      const response = await checkPlus(batch, '')
       Object.assign(merged, response.results || {})
       note = response.note || note
     }
@@ -240,7 +242,7 @@ async function refreshSelectedAT() {
   if (!emails.length) return
   refreshingAT.value = true
   try {
-    const response = await refreshAccessTokens(emails, proxyText(form.value))
+    const response = await refreshAccessTokens(emails, '')
     ElMessage.success(
       `AT 刷新完成：成功 ${response.success} 个，失败 ${response.failed} 个`,
     )
@@ -534,7 +536,7 @@ onDeactivated(() => {
         <div class="plus-schedule-main">
           <div>
             <b>定时 Plus 检测</b>
-            <span class="hint">只读查询账号状态和 Plus 优惠券，不领券、不创建支付。</span>
+            <span class="hint">只读查询账号状态和 Plus 优惠券；默认走服务器直连，不消耗注册代理。</span>
           </div>
           <el-tag :type="plusSchedule.running ? 'warning' : (plusSchedule.last_status === 'failed' ? 'danger' : 'success')">
             {{ plusScheduleStatusText }}
@@ -553,6 +555,11 @@ onDeactivated(() => {
             <el-option label="一体化流程" value="integration" />
             <el-option label="原有流程" value="legacy" />
             <el-option label="全部流程" value="all" />
+          </el-select>
+          <span>出口</span>
+          <el-select v-model="plusSchedule.egress_mode" style="width: 170px" @change="savePlusSchedule">
+            <el-option label="服务器直连（省流量）" value="direct" />
+            <el-option label="注册代理池" value="proxy" />
           </el-select>
           <span>并发</span>
           <el-input-number

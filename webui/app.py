@@ -1209,6 +1209,7 @@ class PlusScheduleReq(BaseModel):
     enabled: Optional[bool] = None
     interval_hours: Optional[float] = Field(None, ge=0.25, le=168)
     scope: Optional[str] = None
+    egress_mode: Optional[str] = None
     batch_size: Optional[int] = Field(None, ge=1, le=100)
     workers: Optional[int] = Field(None, ge=1, le=6)
 

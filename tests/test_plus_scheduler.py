@@ -29,6 +29,7 @@ class PlusSchedulerTest(unittest.TestCase):
         self.assertTrue(config["enabled"])
         self.assertEqual(config["interval_hours"], 3.0)
         self.assertEqual(config["scope"], "integration")
+        self.assertEqual(config["egress_mode"], "direct")
         self.assertEqual(config["workers"], 3)
 
     def test_schedule_settings_are_persisted(self):
@@ -37,6 +38,7 @@ class PlusSchedulerTest(unittest.TestCase):
                 "enabled": False,
                 "interval_hours": 4.5,
                 "scope": "all",
+                "egress_mode": "proxy",
                 "batch_size": 40,
                 "workers": 2,
             }
@@ -44,9 +46,11 @@ class PlusSchedulerTest(unittest.TestCase):
         self.assertFalse(updated["enabled"])
         self.assertEqual(updated["interval_hours"], 4.5)
         self.assertEqual(updated["scope"], "all")
+        self.assertEqual(updated["egress_mode"], "proxy")
         self.assertEqual(get_schedule_config(), updated)
 
     def test_cycle_uses_proxy_and_records_counts(self):
+        save_schedule_config({"egress_mode": "proxy"})
         db.replace_proxy_pool(["socks5://proxy.example:1080"])
         db.save_registered(
             {
@@ -100,7 +104,11 @@ class PlusSchedulerTest(unittest.TestCase):
                     "workflow_scope": "integration",
                 }
             )
-        save_schedule_config({"batch_size": 1, "workers": 1})
+        save_schedule_config({
+            "egress_mode": "proxy",
+            "batch_size": 1,
+            "workers": 1,
+        })
         calls = []
 
         def runner(emails, proxy, workers):
@@ -150,7 +158,11 @@ class PlusSchedulerTest(unittest.TestCase):
                     "workflow_scope": "integration",
                 }
             )
-        save_schedule_config({"batch_size": 1, "workers": 1})
+        save_schedule_config({
+            "egress_mode": "proxy",
+            "batch_size": 1,
+            "workers": 1,
+        })
         calls = []
 
         def runner(emails, proxy, workers):
@@ -191,6 +203,42 @@ class PlusSchedulerTest(unittest.TestCase):
             "socks5://good.example:1080",
             "socks5://good.example:1080",
         ])
+
+    def test_direct_cycle_does_not_use_or_require_proxies(self):
+        db.save_registered(
+            {
+                "email": "direct@example.com",
+                "access_token": "at-direct",
+                "session_token": "st-direct",
+                "workflow_scope": "integration",
+            }
+        )
+        save_schedule_config({
+            "egress_mode": "direct",
+            "batch_size": 1,
+            "workers": 1,
+        })
+        calls = []
+
+        def runner(emails, proxy, workers):
+            calls.append(proxy)
+            return {
+                "results": {
+                    email: {"status": "free", "label": "Free"}
+                    for email in emails
+                }
+            }
+
+        scheduler = PlusScheduler()
+        scheduler._runner = runner
+        scheduler._proxy_selector = lambda: (_ for _ in ()).throw(
+            AssertionError("direct mode must not select a proxy")
+        )
+        result = scheduler._run_cycle()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [""])
+        self.assertEqual(result["free"], 1)
 
 
 if __name__ == "__main__":

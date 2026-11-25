@@ -18,6 +18,7 @@ DEFAULT_INTERVAL_HOURS = 3.0
 DEFAULT_BATCH_SIZE = 25
 DEFAULT_WORKERS = 3
 DEFAULT_SCOPE = "integration"
+DEFAULT_EGRESS_MODE = "direct"
 
 
 def _as_bool(value, default: bool = True) -> bool:
@@ -50,10 +51,17 @@ def get_schedule_config() -> dict:
     scope = str(db.get_setting("plus_schedule_scope", DEFAULT_SCOPE) or DEFAULT_SCOPE).strip().lower()
     if scope not in {"integration", "legacy", "all"}:
         scope = DEFAULT_SCOPE
+    egress_mode = str(
+        db.get_setting("plus_schedule_egress_mode", DEFAULT_EGRESS_MODE)
+        or DEFAULT_EGRESS_MODE
+    ).strip().lower()
+    if egress_mode not in {"direct", "proxy"}:
+        egress_mode = DEFAULT_EGRESS_MODE
     return {
         "enabled": _as_bool(db.get_setting("plus_schedule_enabled", "1"), True),
         "interval_hours": interval_hours,
         "scope": scope,
+        "egress_mode": egress_mode,
         "batch_size": max(
             1,
             min(100, _as_int(db.get_setting("plus_schedule_batch_size"), DEFAULT_BATCH_SIZE)),
@@ -80,6 +88,11 @@ def save_schedule_config(data: dict) -> dict:
     scope = str(data.get("scope") or current["scope"]).strip().lower()
     if scope not in {"integration", "legacy", "all"}:
         scope = DEFAULT_SCOPE
+    egress_mode = str(
+        data.get("egress_mode") or current["egress_mode"]
+    ).strip().lower()
+    if egress_mode not in {"direct", "proxy"}:
+        egress_mode = DEFAULT_EGRESS_MODE
     batch_size = max(
         1,
         min(100, _as_int(data.get("batch_size"), current["batch_size"])),
@@ -91,6 +104,7 @@ def save_schedule_config(data: dict) -> dict:
     db.set_setting("plus_schedule_enabled", "1" if enabled else "0")
     db.set_setting("plus_schedule_interval_hours", str(interval_hours))
     db.set_setting("plus_schedule_scope", scope)
+    db.set_setting("plus_schedule_egress_mode", egress_mode)
     db.set_setting("plus_schedule_batch_size", str(batch_size))
     db.set_setting("plus_schedule_workers", str(workers))
     if not enabled:
@@ -270,6 +284,7 @@ class PlusScheduler:
                 return {"ok": True, **counts}
 
             batch_size = cfg["batch_size"]
+            use_proxy = cfg["egress_mode"] == "proxy"
             consecutive_batch_errors = 0
             current_proxy = ""
             last_batch_note = ""
@@ -277,7 +292,7 @@ class PlusScheduler:
                 if self._stop.is_set():
                     counts["stopped"] = True
                     break
-                if not current_proxy:
+                if use_proxy and not current_proxy:
                     try:
                         current_proxy = self._select_proxy()
                     except Exception as exc:
@@ -315,27 +330,30 @@ class PlusScheduler:
                             note
                             or f"批次网络错误 {error_count}/{len(batch)}"
                         )
-                        db.mark_proxy_failure(
-                            proxy,
-                            error_text,
-                            cooldown_seconds=900,
-                        )
+                        if proxy:
+                            db.mark_proxy_failure(
+                                proxy,
+                                error_text,
+                                cooldown_seconds=900,
+                            )
                         last_batch_note = error_text
                         current_proxy = ""
                         consecutive_batch_errors += 1
                     else:
-                        db.mark_proxy_success(proxy)
+                        if proxy:
+                            db.mark_proxy_success(proxy)
                         consecutive_batch_errors = 0
                 except Exception as exc:
                     consecutive_batch_errors += 1
                     counts["errors"] += len(batch)
                     error_text = f"{type(exc).__name__}: {exc}"
                     last_batch_note = error_text
-                    db.mark_proxy_failure(
-                        proxy,
-                        error_text,
-                        cooldown_seconds=900,
-                    )
+                    if proxy:
+                        db.mark_proxy_failure(
+                            proxy,
+                            error_text,
+                            cooldown_seconds=900,
+                        )
                     current_proxy = ""
                     try:
                         from .integration import _redact_proxy
@@ -345,7 +363,7 @@ class PlusScheduler:
                         proxy_label = "代理"
                     logger.warning(
                         "[plus-scheduler] batch failed via %s: %s",
-                        proxy_label,
+                        proxy_label if proxy else "服务器直连",
                         exc,
                     )
                 counts["batches"] += 1
