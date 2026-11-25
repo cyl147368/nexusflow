@@ -2060,11 +2060,34 @@ class AuthFlow:
                 otp_provider=otp_provider,
             )
             self._apply_browser_result(browser_result, intent=intent)
-            return bool(
-                browser_result.cookies
-                or browser_result.final_url
-                or browser_result.cookie_value("oai-did")
+            device_id = browser_result.cookie_value("oai-did")
+            session_token = browser_result.cookie_value(
+                "__Secure-next-auth.session-token"
             )
+            # Warmup only needs the Cloudflare/oai-did cookies. For an auth
+            # challenge, merely landing on chatgpt.com is not success: the
+            # protocol session is then guaranteed to fail authorize/continue
+            # with 409 invalid_state.
+            if (reason or "").startswith("warmup"):
+                return bool(device_id or browser_result.cookies)
+            usable_stage = browser_result.stage in {
+                "callback",
+                "email_otp_verification",
+                "create_account_password",
+                "login_password",
+                "about_you",
+                "add_phone",
+                "mfa_challenge",
+            }
+            if usable_stage or session_token:
+                return True
+            logger.warning(
+                "浏览器已打开页面，但没有进入有效认证状态: stage=%s url=%s；"
+                "不会把 chatgpt.com 首页误判为降级成功",
+                browser_result.stage or "unknown",
+                (browser_result.final_url or "")[:180],
+            )
+            return False
         except BrowserFallbackError as exc:
             logger.warning("浏览器关键步骤回退失败: %s", exc)
         except Exception as exc:
@@ -2702,11 +2725,10 @@ class AuthFlow:
                         "新账号" if is_new else "已有账号",
                     )
                     return is_new
-            logger.warning(f"authorize/continue 探测失败且无落地 URL 可判（{e}），保守按新注册处理")
-            self._is_existing_account = False
-            self._existing_email_verification_mode = ""
-            self._existing_page_type = ""
-            return True
+            raise RuntimeError(
+                "authorize/continue 探测失败，且浏览器降级没有建立有效认证状态"
+                f"（原错误: {e}）"
+            ) from e
 
         # 检测 page_type/continue_url，区分新账号与已有账号
         try:

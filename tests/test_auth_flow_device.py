@@ -2,7 +2,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from auth_flow import AuthFlow
+from auth_flow import AuthFlow, BrowserFallbackResult
 from config import Config
 
 
@@ -447,6 +447,85 @@ class AuthFlowDeviceTest(unittest.TestCase):
             email="alias@example.com",
         )
         auth_oauth_init.assert_called_once_with("https://auth.test/fresh")
+
+    def test_browser_home_is_not_treated_as_auth_fallback_success(self):
+        flow = AuthFlow(Config())
+        result = BrowserFallbackResult(
+            driver="camoufox",
+            final_url="https://chatgpt.com/",
+            stage="chatgpt_home",
+            title="ChatGPT",
+            user_agent="Firefox/158",
+            cookies=[
+                {
+                    "name": "oai-did",
+                    "value": "device-id",
+                    "domain": ".chatgpt.com",
+                    "path": "/",
+                }
+            ],
+        )
+        with patch("auth_flow.BrowserFallback") as browser_cls:
+            browser_cls.return_value.bootstrap.return_value = result
+            ok = flow._recover_auth_with_browser(
+                "https://auth.openai.com/authorize?state=test",
+                "probe@example.com",
+                reason="authorize_cloudflare",
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(flow._last_browser_fallback, result)
+
+    def test_browser_auth_landing_is_accepted_as_fallback_success(self):
+        flow = AuthFlow(Config())
+        result = BrowserFallbackResult(
+            driver="camoufox",
+            final_url="https://auth.openai.com/email-verification?x=1",
+            stage="email_otp_verification",
+            title="Verify email",
+            user_agent="Firefox/158",
+            cookies=[
+                {
+                    "name": "oai-did",
+                    "value": "device-id",
+                    "domain": ".chatgpt.com",
+                    "path": "/",
+                }
+            ],
+        )
+        with patch("auth_flow.BrowserFallback") as browser_cls:
+            browser_cls.return_value.bootstrap.return_value = result
+            ok = flow._recover_auth_with_browser(
+                "https://auth.openai.com/authorize?state=test",
+                "probe@example.com",
+                reason="authorize_cloudflare",
+            )
+
+        self.assertTrue(ok)
+
+    def test_signup_does_not_proceed_after_failed_browser_fallback(self):
+        flow = AuthFlow(Config())
+        with (
+            patch.object(
+                flow,
+                "authorize_continue",
+                side_effect=RuntimeError("HTTP 409 invalid_state"),
+            ),
+            patch.object(
+                flow,
+                "_recover_auth_with_browser",
+                return_value=False,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "浏览器降级没有建立有效认证状态",
+            ):
+                flow.signup(
+                    "probe@example.com",
+                    landing_url="",
+                    sentinel_provider=lambda: "token",
+                )
 
 
 if __name__ == "__main__":
