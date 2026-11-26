@@ -91,6 +91,13 @@ class AuthFlowDeviceTest(unittest.TestCase):
         self.assertNotIn("domain", by_name["__Host-next-auth.csrf-token"])
         self.assertNotIn("path", by_name["__Host-next-auth.csrf-token"])
         self.assertTrue(by_name["__Secure-next-auth.state"]["secure"])
+        fresh_login_cookies = flow._export_protocol_cookies(
+            include_auth_state=False
+        )
+        self.assertEqual(
+            {item["name"] for item in fresh_login_cookies},
+            {"oai-did"},
+        )
 
     def test_cloudflare_transient_cookie_detection(self):
         self.assertTrue(_is_transient_cloudflare_cookie("__cf_bm"))

@@ -1915,7 +1915,11 @@ class AuthFlow:
         self._document_navigation_id = ""
         self._auth_session_logging_id = ""
 
-    def _export_protocol_cookies(self) -> list[dict[str, Any]]:
+    def _export_protocol_cookies(
+        self,
+        *,
+        include_auth_state: bool = True,
+    ) -> list[dict[str, Any]]:
         """Export the curl_cffi jar into the browser's Playwright format."""
         result: list[dict[str, Any]] = []
         try:
@@ -1933,6 +1937,15 @@ class AuthFlow:
             domain = str(getattr(cookie, "domain", "") or "")
             path = str(getattr(cookie, "path", "/") or "/")
             if not name or not value or not domain:
+                continue
+            if not include_auth_state and (
+                name.startswith("__Host-next-auth.")
+                or name in {
+                    "__Secure-next-auth.state",
+                    "__Secure-next-auth.callback-url",
+                    "__Secure-next-auth.pkce.code_verifier",
+                }
+            ):
                 continue
             # These cookies are scoped to the TLS/User-Agent family that solved
             # the challenge. Reusing curl_cffi's challenge cookie inside
@@ -2255,7 +2268,7 @@ class AuthFlow:
                 auth_url,
                 email,
                 password,
-                cookies=self._export_protocol_cookies(),
+                cookies=self._export_protocol_cookies(include_auth_state=False),
                 otp_provider=_otp_provider,
                 capture_auth=True,
             )
