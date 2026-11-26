@@ -120,6 +120,7 @@ def _recover_account_login_first(
         "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
     }
     previous = db.get_registered(email) or {}
+    existing_password = str(previous.get("password") or "")
     flow = AuthFlow(
         cfg,
         env_overrides=env_overrides,
@@ -134,8 +135,8 @@ def _recover_account_login_first(
     result = flow.run_protocol_login(
         mail,
         email,
-        password="",
-        force_email_otp=True,
+        password=existing_password,
+        force_email_otp=not bool(existing_password),
     )
     data = result.to_dict()
     if not data.get("refresh_token"):
@@ -158,7 +159,9 @@ def _recover_account_login_first(
     emit_phase("resetting_password", {"email": email})
     emit_log("登录成功，正在设置新密码")
     try:
-        if flow.password_login_required:
+        if existing_password:
+            password_response = {"mode": "existing"}
+        elif flow.password_login_required:
             password_response = flow.set_or_reset_password(
                 email,
                 new_password,
@@ -172,8 +175,10 @@ def _recover_account_login_first(
                 otp_timeout=otp_timeout,
             )
         password_ok = True
-        data["password"] = new_password
+        data["password"] = existing_password or new_password
         data["password_status"] = password_response.get("mode") or "reset"
+        if existing_password:
+            emit_log("账号已有密码，跳过重复重置")
         emit_log(
             "已重置账号密码"
             if data["password_status"] == "reset"

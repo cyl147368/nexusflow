@@ -1831,6 +1831,83 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(row["credential_source"], "recovery")
         self.assertEqual(row["credential_source_label"], "邮箱验证码找回")
 
+    def test_recovery_reuses_existing_password_and_skips_password_reset(self):
+        from webui import account_recovery
+
+        class ExistingPasswordFlow:
+            password_login_required = False
+
+            def run_protocol_login(
+                self,
+                mail,
+                email,
+                password="",
+                force_email_otp=False,
+            ):
+                del mail
+                self.password = password
+                self.force_email_otp = force_email_otp
+
+                class Result:
+                    @staticmethod
+                    def to_dict():
+                        return {
+                            "email": email,
+                            "password": "",
+                            "access_token": "existing-at",
+                            "session_token": "existing-st",
+                            "refresh_token": "",
+                        }
+
+                return Result()
+
+            def set_or_reset_password(self, *args, **kwargs):
+                raise AssertionError("existing password must not be reset")
+
+            def add_password_via_reauth(self, *args, **kwargs):
+                raise AssertionError("existing password must not be re-added")
+
+        fake = ExistingPasswordFlow()
+        saved = {}
+        with (
+            patch.object(
+                account_recovery,
+                "create_mail_provider",
+                return_value=object(),
+            ),
+            patch.object(account_recovery, "AuthFlow", return_value=fake),
+            patch.object(
+                account_recovery.db,
+                "get_registered",
+                return_value={
+                    "password": "ExistingPassword1!",
+                    "totp_secret": "",
+                    "access_token": "",
+                    "session_token": "",
+                },
+            ),
+            patch.object(
+                account_recovery.db,
+                "save_registered",
+                side_effect=lambda data: saved.update(data),
+            ),
+            patch.object(account_recovery.db, "mark_done"),
+        ):
+            result = account_recovery._recover_account_login_first(
+                {"email": "existing-password@example.com"},
+                {
+                    "relay_url": "https://mail.example/existing",
+                    "new_password": "ReplacementPassword1!",
+                    "want_2fa": False,
+                    "workflow_scope": "integration",
+                },
+            )
+
+        self.assertEqual(fake.password, "ExistingPassword1!")
+        self.assertFalse(fake.force_email_otp)
+        self.assertEqual(result["password"], "ExistingPassword1!")
+        self.assertEqual(saved["password"], "ExistingPassword1!")
+
 
 if __name__ == "__main__":
     unittest.main()
