@@ -1464,10 +1464,12 @@ class IntegrationApiTest(unittest.TestCase):
                 {
                     "email": "one@example.com",
                     "relay_url": "https://mail.example/one",
+                    "anonymous_id": "",
                 },
                 {
                     "email": "two@example.com",
                     "relay_url": "https://mail.example/two",
+                    "anonymous_id": "",
                 },
             ],
         )
@@ -2056,6 +2058,51 @@ class IntegrationApiTest(unittest.TestCase):
         slow_bind.assert_called_once()
         self.assertEqual(result["two_fa_status"], "created")
         self.assertEqual(saved["totp_secret"], "JBSWY3DPEHPK3PXP")
+
+    def test_failed_recovery_deletes_alias_without_usable_credentials(self):
+        from webui import integration, registrar
+
+        result = {"ok": False, "email": "empty@example.com"}
+        with (
+            patch.object(registrar.db, "get_registered", return_value=None),
+            patch.object(integration, "delete_icloud_alias") as delete,
+        ):
+            saved = registrar._delete_alias_after_failed_recovery(
+                {
+                    "email": "empty@example.com",
+                    "anonymous_id": "alias-empty",
+                },
+                {"delete_alias_on_failure": True},
+                result,
+            )
+
+        self.assertTrue(saved["alias_deleted"])
+        delete.assert_called_once_with("", "alias-empty")
+
+    def test_failed_recovery_keeps_alias_with_partial_credentials(self):
+        from webui import integration, registrar
+
+        result = {"ok": False, "email": "partial@example.com"}
+        with (
+            patch.object(
+                registrar.db,
+                "get_registered",
+                return_value={"access_token": "partial-at"},
+            ),
+            patch.object(integration, "delete_icloud_alias") as delete,
+        ):
+            saved = registrar._delete_alias_after_failed_recovery(
+                {
+                    "email": "partial@example.com",
+                    "anonymous_id": "alias-partial",
+                },
+                {"delete_alias_on_failure": True},
+                result,
+            )
+
+        self.assertFalse(saved["alias_deleted"])
+        self.assertEqual(saved["alias_delete_error"], "partial_credentials_present")
+        delete.assert_not_called()
 
 
 if __name__ == "__main__":

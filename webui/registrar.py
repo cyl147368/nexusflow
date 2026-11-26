@@ -817,6 +817,44 @@ def _save_recovery_batch(job: dict) -> None:
     db.save_recovery_batch(job)
 
 
+def _delete_alias_after_failed_recovery(
+    item: dict,
+    options: dict,
+    result: dict,
+) -> dict:
+    """Delete an alias only after recovery failed and left no usable credential."""
+    if result.get("ok") or not options.get("delete_alias_on_failure"):
+        return result
+    email = str(item.get("email") or "").strip().lower()
+    anonymous_id = str(item.get("anonymous_id") or "").strip()
+    if not anonymous_id:
+        result["alias_deleted"] = False
+        result["alias_delete_error"] = "missing_anonymous_id"
+        return result
+    stored = db.get_registered(email) or {}
+    usable = any(
+        str(stored.get(key) or "").strip()
+        for key in ("password", "totp_secret", "access_token", "session_token")
+    )
+    if usable:
+        result["alias_deleted"] = False
+        result["alias_delete_error"] = "partial_credentials_present"
+        return result
+    try:
+        from .integration import delete_icloud_alias
+
+        delete_icloud_alias(
+            str(options.get("icloud_account_id") or ""),
+            anonymous_id,
+        )
+        result["alias_deleted"] = True
+        result["alias_delete_error"] = ""
+    except Exception as exc:  # noqa: BLE001
+        result["alias_deleted"] = False
+        result["alias_delete_error"] = str(exc)[:300]
+    return result
+
+
 def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -> None:
     """Process a persisted recovery queue in submission order."""
     from .account_recovery import RecoveryError, recover_account
@@ -949,6 +987,11 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                     for _ in range(delay):
                         time.sleep(1)
                     continue
+            result = _delete_alias_after_failed_recovery(
+                item,
+                options,
+                result,
+            )
             results.append(result)
             next_index += 1
             job.update(
@@ -957,6 +1000,9 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
                 completed_count=len(results),
                 success_count=sum(1 for row in results if row.get("ok")),
                 failure_count=sum(1 for row in results if not row.get("ok")),
+                alias_deleted_count=sum(
+                    1 for row in results if row.get("alias_deleted")
+                ),
                 current_email="",
                 next_attempt_at=None,
             )

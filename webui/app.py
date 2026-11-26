@@ -167,6 +167,7 @@ class RecoveryReq(BaseModel):
 class RecoveryBatchItem(BaseModel):
     email: str
     relay_url: str = ""
+    anonymous_id: str = ""
 
 
 class RecoveryBatchReq(BaseModel):
@@ -178,6 +179,7 @@ class RecoveryBatchReq(BaseModel):
     workflow_scope: str = "legacy"
     cool_down_seconds: int = 10
     rotate_proxy: bool = False
+    delete_alias_on_failure: bool = False
 
 
 class ICloudRecoveryScanReq(BaseModel):
@@ -560,7 +562,11 @@ def api_recovery_batch_start(req: RecoveryBatchReq):
             raise HTTPException(400, f"{email} 不在号池中，且没有接码地址")
         if not relay_url:
             raise HTTPException(400, f"{email} 没有接码地址")
-        items.append({"email": email, "relay_url": relay_url})
+        items.append({
+            "email": email,
+            "relay_url": relay_url,
+            "anonymous_id": (raw.anonymous_id or "").strip(),
+        })
     if not items:
         raise HTTPException(400, "没有可处理的邮箱")
     options = {
@@ -571,6 +577,7 @@ def api_recovery_batch_start(req: RecoveryBatchReq):
         "workflow_scope": _workflow_scope(req.workflow_scope, "legacy"),
         "cool_down_seconds": max(5, int(req.cool_down_seconds or 10)),
         "rotate_proxy": req.rotate_proxy,
+        "delete_alias_on_failure": req.delete_alias_on_failure,
     }
     try:
         batch_id = registrar.start_recovery_batch(items, options)
