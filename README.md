@@ -195,7 +195,8 @@ AIRPORT_SUBSCRIPTION_URL=https://provider.example/api/v1/client/subscribe?token=
 ```
 
 一键部署会启动内部 `mihomo` 服务，并提供 `17890`（自动）、`17891`
-（美国）、`17892`（日本）、`17893`（新加坡）四个 HTTP/SOCKS5 混合入口。
+（美国）、`17892`（日本）、`17893`（新加坡）、`17894`（台湾）五个
+HTTP/SOCKS5 混合入口。
 香港节点被显式排除。它们只存在于 Docker 内部网络，不会向公网暴露。
 
 ### 主 WebUI

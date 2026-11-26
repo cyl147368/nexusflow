@@ -95,7 +95,7 @@ services:
     volumes:
       - ./services/mihomo/entrypoint.sh:/opt/mihomo/entrypoint.sh:ro
       - mihomo-data:/data
-    expose: ["17890", "17891", "17892", "17893", "9090"]
+    expose: ["17890", "17891", "17892", "17893", "17894", "9090"]
     networks: [nexusflow]
 
   updater:

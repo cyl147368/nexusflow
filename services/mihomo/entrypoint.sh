@@ -65,10 +65,16 @@ proxy-groups:
     filter: "(?i)(新加坡|🇸🇬|Singapore)"
     exclude-filter: "(?i)(香港|🇭🇰|Hong Kong)"
 
+  - name: REG-TW
+    type: select
+    use: [airport]
+    filter: "(?i)(台湾|臺灣|🇹🇼|Taiwan)"
+    exclude-filter: "(?i)(香港|🇭🇰|Hong Kong)"
+
   - name: REG-AUTO
     type: url-test
     use: [airport]
-    filter: "(?i)(美国|🇺🇸|日本|🇯🇵|新加坡|🇸🇬|United States|Japan|Singapore)"
+    filter: "(?i)(美国|🇺🇸|日本|🇯🇵|新加坡|🇸🇬|台湾|臺灣|🇹🇼|United States|Japan|Singapore|Taiwan)"
     exclude-filter: "(?i)(香港|🇭🇰|Hong Kong)"
     url: https://www.gstatic.com/generate_204
     interval: 300
@@ -102,6 +108,13 @@ listeners:
     port: 17893
     listen: 0.0.0.0
     proxy: REG-SG
+    udp: false
+
+  - name: reg-tw
+    type: mixed
+    port: 17894
+    listen: 0.0.0.0
+    proxy: REG-TW
     udp: false
 
 rules:

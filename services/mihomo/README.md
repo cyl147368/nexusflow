@@ -7,6 +7,7 @@ internal HTTP/SOCKS5 endpoints:
 - `http://mihomo:17891` / `socks5://mihomo:17891`: United States
 - `http://mihomo:17892` / `socks5://mihomo:17892`: Japan
 - `http://mihomo:17893` / `socks5://mihomo:17893`: Singapore
+- `http://mihomo:17894` / `socks5://mihomo:17894`: Taiwan
 
 Hong Kong nodes are excluded from every group. The subscription URL is read
 from the server-only `AIRPORT_SUBSCRIPTION_URL` environment variable and is
