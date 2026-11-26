@@ -58,6 +58,21 @@ FORMATS: list[ExportFormat] = [
         render=lambda r: _s(r, "access_token"),
     ),
     ExportFormat(
+        id="st",
+        label="session_token",
+        filename="ST.txt",
+        render=lambda r: _s(r, "session_token"),
+    ),
+    ExportFormat(
+        id="at_st",
+        label="access_token----session_token",
+        filename="AT_ST.txt",
+        render=lambda r: (
+            f'{_s(r, "access_token")}----{_s(r, "session_token")}'
+        ),
+        note="每行：AT----ST",
+    ),
+    ExportFormat(
         id="email_pw",
         label="邮箱----密码",
         filename="账号密码.txt",
