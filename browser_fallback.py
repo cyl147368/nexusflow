@@ -201,6 +201,9 @@ class BrowserFallback:
         user_agent: str = "",
         locale: str = "",
         timezone: str = "",
+        exit_ip: str = "",
+        screen: str = "",
+        browser_version: str = "",
     ):
         self.proxy = proxy or ""
         self.enabled = (
@@ -222,6 +225,9 @@ class BrowserFallback:
         self.user_agent = user_agent
         self.locale = locale or os.getenv("BROWSER_FALLBACK_LOCALE", "en-US")
         self.timezone = timezone or os.getenv("BROWSER_FALLBACK_TIMEZONE", "")
+        self.exit_ip = exit_ip or ""
+        self.screen = screen or ""
+        self.browser_version = browser_version or ""
 
     def bootstrap(
         self,
@@ -304,16 +310,28 @@ class BrowserFallback:
             "headless": self.headless,
             "humanize": True,
             "i_know_what_im_doing": True,
-            # GeoIP discovery cannot see through a loopback proxy bridge. Auth
-            # passes the protocol session's IP-derived locale/timezone instead.
-            "geoip": False,
+            # The loopback bridge hides the upstream address from Camoufox's
+            # automatic GeoIP probe. Auth supplies the already-observed exit IP
+            # so Camoufox configures country/locale/timezone from the same route.
+            "geoip": self.exit_ip or False,
+            # Keep the browser identity in the same family/version as the
+            # protocol session that created the authorize transaction.
+            "os": ["windows"],
         }
+        if self.locale:
+            kwargs["locale"] = self.locale
+        width, height = _parse_screen(self.screen)
+        if width and height:
+            kwargs["window"] = (width, height)
+        version_match = re.search(r"(\d+)$", self.browser_version)
+        if version_match:
+            kwargs["ff_version"] = int(version_match.group(1))
         proxy = playwright_proxy(browser_proxy_url)
         if proxy:
             kwargs["proxy"] = proxy
         with Camoufox(**kwargs) as browser:
             context_kwargs: dict[str, Any] = {
-                "viewport": {"width": 1366, "height": 768},
+                "viewport": {"width": width or 1366, "height": height or 768},
             }
             if self.locale:
                 context_kwargs["locale"] = self.locale
@@ -547,6 +565,13 @@ def _env_float(name: str, default: float) -> float:
         return max(5.0, float(os.getenv(name, str(default))))
     except Exception:
         return default
+
+
+def _parse_screen(value: str) -> tuple[int, int]:
+    match = re.fullmatch(r"\s*(\d{3,5})x(\d{3,5})\s*", value or "")
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
 
 
 def _module_exists(name: str) -> bool:

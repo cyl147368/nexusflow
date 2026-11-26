@@ -152,6 +152,7 @@ class AuthFlow:
         self._env_overrides = dict(env_overrides or {})
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
+        self._exit_ip = ""
         self._flow_started_at = time.time()
         self._fingerprint = _stable_firefox_fingerprint()
         self._ua = self._fingerprint["user_agent"]
@@ -2082,6 +2083,9 @@ class AuthFlow:
                 user_agent=self._ua,
                 locale=str(self._fingerprint.get("lang") or "en-US"),
                 timezone=str(self._fingerprint.get("timezone") or ""),
+                exit_ip=self._exit_ip,
+                screen=str(self._fingerprint.get("screen") or ""),
+                browser_version=str(self._fingerprint.get("impersonate") or ""),
             )
             browser_result = browser.bootstrap(
                 auth_url,
@@ -2248,6 +2252,7 @@ class AuthFlow:
                 loc = re.search(r"loc=(\w+)", resp.text)
                 ip = re.search(r"ip=([^\n]+)", resp.text)
                 country_code = loc.group(1) if loc else ""
+                self._exit_ip = ip.group(1).strip() if ip else ""
                 logger.info(f"网络正常 - IP: {ip.group(1) if ip else 'N/A'}, "
                             f"地区: {country_code or 'N/A'}")
 
