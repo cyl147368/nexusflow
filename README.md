@@ -133,7 +133,7 @@ curl_cffi 纯协议
 
 ```dotenv
 BROWSER_FALLBACK_ENABLED=1
-BROWSER_FALLBACK_DRIVER=auto      # auto / camoufox / cloak / playwright
+BROWSER_FALLBACK_DRIVER=auto      # auto: Playwright -> Camoufox -> Cloak
 BROWSER_FALLBACK_MAX_ATTEMPTS=2
 BROWSER_FALLBACK_TIMEOUT=75
 BROWSER_FALLBACK_HEADLESS=0       # 容器内通过 Xvfb 以虚拟有头模式运行

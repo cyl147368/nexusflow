@@ -319,10 +319,14 @@ class BrowserFallback:
         if self.driver in {"camoufox", "cloak", "playwright"}:
             return [self.driver]
         available: list[str] = []
-        if _module_exists("camoufox.sync_api"):
-            available.append("camoufox")
+        # Playwright's headed Chromium is the most reliable driver for the
+        # current auth.openai.com challenge under Xvfb. Keep Camoufox as the
+        # next fallback because its generated identity can change the auth
+        # transaction in ways that redirect back to the ChatGPT homepage.
         if _module_exists("playwright.sync_api"):
             available.append("playwright")
+        if _module_exists("camoufox.sync_api"):
+            available.append("camoufox")
         if _module_exists("cloakbrowser"):
             available.append("cloak")
         return available
