@@ -758,7 +758,7 @@ class BrowserFallback:
                 if otp_provider is not None and not otp_submitted:
                     try:
                         logger.info("浏览器已进入验证码页，等待邮箱验证码")
-                        if not resend_clicked and not otp_login_clicked:
+                        if not resend_clicked:
                             if _click_resend(page):
                                 logger.info("浏览器已请求重新发送验证码")
                                 page.wait_for_timeout(1200)
