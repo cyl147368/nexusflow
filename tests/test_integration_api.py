@@ -1908,6 +1908,155 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(result["password"], "ExistingPassword1!")
         self.assertEqual(saved["password"], "ExistingPassword1!")
 
+    def test_recovery_does_not_claim_totp_is_repaired_without_secret(self):
+        from webui import account_recovery
+        from webui.account_recovery import RecoveryError
+
+        class ExistingPasswordFlow:
+            password_login_required = False
+
+            def run_protocol_login(self, *args, **kwargs):
+                class Result:
+                    @staticmethod
+                    def to_dict():
+                        return {
+                            "email": "server-totp@example.com",
+                            "access_token": "existing-at",
+                            "session_token": "existing-st",
+                        }
+
+                return Result()
+
+        saved = {}
+        with (
+            patch.object(
+                account_recovery,
+                "create_mail_provider",
+                return_value=object(),
+            ),
+            patch.object(
+                account_recovery,
+                "AuthFlow",
+                return_value=ExistingPasswordFlow(),
+            ),
+            patch.object(
+                account_recovery.db,
+                "get_registered",
+                return_value={
+                    "email": "server-totp@example.com",
+                    "password": "ExistingPassword1!",
+                    "totp_secret": "",
+                    "access_token": "existing-at",
+                    "session_token": "existing-st",
+                },
+            ),
+            patch.object(
+                account_recovery.db,
+                "save_registered",
+                side_effect=lambda data: saved.update(data),
+            ),
+            patch.object(account_recovery.db, "mark_done"),
+            patch(
+                "webui.two_factor.get_totp_status",
+                return_value={
+                    "checked": True,
+                    "enabled": True,
+                    "totp": True,
+                },
+            ),
+        ):
+            with self.assertRaises(RecoveryError) as raised:
+                account_recovery._recover_account_login_first(
+                    {"email": "server-totp@example.com"},
+                    {
+                        "relay_url": "https://mail.example/totp",
+                        "want_2fa": True,
+                        "workflow_scope": "integration",
+                    },
+                )
+
+        self.assertEqual(saved["two_fa_status"], "unrecoverable")
+        self.assertIn("secret is missing locally", saved["recovery_error"])
+        self.assertEqual(raised.exception.payload["two_fa_status"], "unrecoverable")
+
+    def test_recovery_falls_back_to_slow_2fa_binding(self):
+        from webui import account_recovery
+
+        class ExistingPasswordFlow:
+            password_login_required = False
+
+            def run_protocol_login(self, *args, **kwargs):
+                class Result:
+                    @staticmethod
+                    def to_dict():
+                        return {
+                            "email": "fallback-2fa@example.com",
+                            "access_token": "new-at",
+                            "session_token": "new-st",
+                        }
+
+                return Result()
+
+        saved = {}
+        with (
+            patch.object(
+                account_recovery,
+                "create_mail_provider",
+                return_value=object(),
+            ),
+            patch.object(
+                account_recovery,
+                "AuthFlow",
+                return_value=ExistingPasswordFlow(),
+            ),
+            patch.object(
+                account_recovery.db,
+                "get_registered",
+                return_value={
+                    "email": "fallback-2fa@example.com",
+                    "password": "ExistingPassword1!",
+                    "totp_secret": "",
+                },
+            ),
+            patch.object(
+                account_recovery.db,
+                "save_registered",
+                side_effect=lambda data: saved.update(data),
+            ),
+            patch.object(account_recovery.db, "mark_done"),
+            patch(
+                "webui.two_factor.get_totp_status",
+                return_value={
+                    "checked": True,
+                    "enabled": False,
+                    "totp": False,
+                },
+            ),
+            patch(
+                "webui.two_factor.bind_totp_2fa_inline",
+                return_value=None,
+            ),
+            patch(
+                "webui.two_factor.bind_totp_2fa",
+                return_value={
+                    "secret": "JBSWY3DPEHPK3PXP",
+                    "factor_id": "factor",
+                },
+            ) as slow_bind,
+        ):
+            result = account_recovery._recover_account_login_first(
+                {"email": "fallback-2fa@example.com"},
+                {
+                    "relay_url": "https://mail.example/fallback",
+                    "want_2fa": True,
+                    "workflow_scope": "integration",
+                },
+            )
+
+        slow_bind.assert_called_once()
+        self.assertEqual(result["two_fa_status"], "created")
+        self.assertEqual(saved["totp_secret"], "JBSWY3DPEHPK3PXP")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -192,7 +192,7 @@ def _recover_account_login_first(
     totp_info = None
     two_fa_status = "not_requested"
     if options.get("want_2fa", True):
-        from .two_factor import bind_totp_2fa_inline, get_totp_status
+        from .two_factor import bind_totp_2fa, bind_totp_2fa_inline, get_totp_status
 
         emit_phase("checking_2fa", {"email": email})
         emit_log("正在检查账号 2FA 状态")
@@ -204,6 +204,11 @@ def _recover_account_login_first(
                 "",
             )
             data["totp_factor_id"] = previous.get("totp_factor_id", "")
+            if not data["totp_secret"]:
+                two_fa_status = "unrecoverable"
+                errors.append(
+                    "TOTP is enabled server-side but its secret is missing locally"
+                )
             emit_log(
                 "该账号已启用 TOTP 2FA；若旧 secret 不在本地，服务端无法重新取回"
             )
@@ -214,6 +219,12 @@ def _recover_account_login_first(
                 totp_info = bind_totp_2fa_inline(
                     flow,
                     data.get("access_token") or "",
+                ) or bind_totp_2fa(
+                    cfg,
+                    email,
+                    data.get("password") or "",
+                    mail_provider=mail,
+                    env_overrides=env_overrides,
                 )
                 if totp_info and totp_info.get("secret"):
                     data["totp_secret"] = totp_info["secret"]
@@ -428,7 +439,7 @@ def recover_account(
 
     two_fa_status = "not_requested"
     if options.get("want_2fa", True) and data.get("access_token"):
-        from .two_factor import bind_totp_2fa_inline, get_totp_status
+        from .two_factor import bind_totp_2fa, bind_totp_2fa_inline, get_totp_status
 
         emit_phase("checking_2fa", {"email": email})
         emit_log("正在检查账号 2FA 状态")
@@ -440,6 +451,11 @@ def recover_account(
                 "",
             )
             data["totp_factor_id"] = previous.get("totp_factor_id", "")
+            if not data["totp_secret"]:
+                two_fa_status = "unrecoverable"
+                errors.append(
+                    "TOTP is enabled server-side but its secret is missing locally"
+                )
             emit_log(
                 "该账号已启用 TOTP 2FA；服务端不能重新取回旧 secret"
             )
@@ -450,6 +466,18 @@ def recover_account(
                 totp_info = bind_totp_2fa_inline(
                     flow,
                     data.get("access_token") or "",
+                ) or bind_totp_2fa(
+                    cfg,
+                    email,
+                    data.get("password") or "",
+                    mail_provider=mail,
+                    env_overrides={
+                        "WEBUI_ALLOW_LOGIN": "1",
+                        "OTP_TIMEOUT": str(otp_timeout),
+                        "SKIP_OAUTH_TOKEN_EXCHANGE": "1",
+                        "OAUTH_CODEX_RT_EXCHANGE": "0",
+                        "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
+                    },
                 )
                 if totp_info and totp_info.get("secret"):
                     data["totp_secret"] = totp_info["secret"]
