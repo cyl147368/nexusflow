@@ -251,6 +251,13 @@ def _is_challenge(page: Any, body: str = "") -> bool:
     return any(marker in text for marker in _CHALLENGE_MARKERS)
 
 
+def _has_visible_auth_controls(page: Any) -> bool:
+    return any(
+        _visible_locator(page, selectors) is not None
+        for selectors in (_EMAIL_SELECTORS, _PASSWORD_SELECTORS, _OTP_SELECTORS)
+    )
+
+
 def _read_access_token(page: Any) -> str:
     """Read the authenticated ChatGPT session token inside the browser."""
     try:
@@ -689,7 +696,13 @@ class BrowserFallback:
             if not _is_challenge(page, body):
                 challenge_passed = True
             else:
-                continue
+                # OpenAI pages can retain a stale challenge string in hidden
+                # DOM/scripts after the interactive form has rendered. A real
+                # visible auth control is stronger evidence than page text.
+                if _has_visible_auth_controls(page):
+                    challenge_passed = True
+                else:
+                    continue
 
             if capture_auth:
                 loading_callback = _loading_callback_url(page)
