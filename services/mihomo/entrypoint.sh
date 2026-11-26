@@ -19,6 +19,9 @@ tcp-concurrent: true
 external-controller: 0.0.0.0:9090
 secret: "${MIHOMO_CONTROLLER_SECRET:-}"
 
+profile:
+  store-selected: true
+
 dns:
   enable: true
   ipv6: false
@@ -45,34 +48,22 @@ proxy-providers:
 
 proxy-groups:
   - name: REG-US
-    type: url-test
+    type: select
     use: [airport]
     filter: "(?i)(美国|🇺🇸|United States)"
     exclude-filter: "(?i)(香港|🇭🇰|Hong Kong)"
-    url: https://www.gstatic.com/generate_204
-    interval: 300
-    timeout: 5000
-    tolerance: 50
 
   - name: REG-JP
-    type: url-test
+    type: select
     use: [airport]
     filter: "(?i)(日本|🇯🇵|Japan)"
     exclude-filter: "(?i)(香港|🇭🇰|Hong Kong)"
-    url: https://www.gstatic.com/generate_204
-    interval: 300
-    timeout: 5000
-    tolerance: 50
 
   - name: REG-SG
-    type: url-test
+    type: select
     use: [airport]
     filter: "(?i)(新加坡|🇸🇬|Singapore)"
     exclude-filter: "(?i)(香港|🇭🇰|Hong Kong)"
-    url: https://www.gstatic.com/generate_204
-    interval: 300
-    timeout: 5000
-    tolerance: 50
 
   - name: REG-AUTO
     type: url-test
