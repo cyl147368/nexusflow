@@ -55,6 +55,7 @@ _OTP_SELECTORS = (
 _CONTINUE_TEXTS = (
     "continue",
     "next",
+    "lanjutkan",
     "log in",
     "sign in",
     "sign up",
@@ -64,6 +65,15 @@ _CONTINUE_TEXTS = (
     "下一步",
     "登录",
     "注册",
+)
+
+_ONE_TIME_CODE_TEXTS = (
+    "sign in with a one-time code",
+    "sign in with one-time code",
+    "use a one-time code",
+    "masuk dengan kode sekali pakai",
+    "使用一次性验证码登录",
+    "使用邮箱验证码登录",
 )
 
 _RESEND_TEXTS = (
@@ -206,6 +216,18 @@ def _click_resend(page: Any) -> bool:
         try:
             locator = page.get_by_text(text, exact=False).first
             if locator.is_visible(timeout=250):
+                locator.click(timeout=5000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _click_one_time_code(page: Any) -> bool:
+    for text in _ONE_TIME_CODE_TEXTS:
+        try:
+            locator = page.get_by_text(text, exact=False).first
+            if locator.is_visible(timeout=350):
                 locator.click(timeout=5000)
                 return True
         except Exception:
@@ -564,6 +586,7 @@ class BrowserFallback:
         password_submitted = False
         otp_submitted = False
         resend_clicked = False
+        otp_login_clicked = False
         access_token = ""
 
         if seed_cookies:
@@ -680,6 +703,12 @@ class BrowserFallback:
             if password and not password_submitted:
                 field = _visible_locator(page, _PASSWORD_SELECTORS)
                 if field is not None:
+                    if otp_provider is not None and not otp_login_clicked:
+                        if _click_one_time_code(page):
+                            otp_login_clicked = True
+                            logger.info("浏览器已切换为一次性验证码登录")
+                            page.wait_for_timeout(1800)
+                            continue
                     try:
                         field.fill(password)
                         if not _click_continue(page):
@@ -695,7 +724,7 @@ class BrowserFallback:
             if otp_field is not None:
                 if otp_provider is not None and not otp_submitted:
                     try:
-                        if not resend_clicked:
+                        if not resend_clicked and not otp_login_clicked:
                             if _click_resend(page):
                                 logger.info("浏览器已请求重新发送验证码")
                                 page.wait_for_timeout(1200)
