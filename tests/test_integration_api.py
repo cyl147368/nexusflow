@@ -285,6 +285,47 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         delete.assert_called_once_with("account", "alias-complete")
 
+    def test_post_success_cleanup_requires_every_split_account_to_be_complete(self):
+        from webui import integration
+
+        complete = {
+            "password": "qweasd123456",
+            "totp_secret": "TOTP",
+            "access_token": "AT",
+            "session_token": "ST",
+        }
+        incomplete = {
+            **complete,
+            "totp_secret": "",
+        }
+
+        with (
+            patch.object(
+                integration.db,
+                "get_registered",
+                side_effect=lambda email: (
+                    incomplete
+                    if email == "complete+split@icloud.com"
+                    else complete
+                ),
+            ),
+            patch.object(integration, "delete_icloud_alias") as delete,
+        ):
+            result = integration._delete_alias_after_success(
+                account_id="account",
+                email="complete@icloud.com",
+                created_alias={"anonymousId": "alias-complete"},
+                account_emails=[
+                    "complete@icloud.com",
+                    "complete+split@icloud.com",
+                ],
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertIn("complete+split@icloud.com", result["reason"])
+        delete.assert_not_called()
+
     def test_cycle_registers_original_and_split_mailboxes(self):
         from webui import integration
 

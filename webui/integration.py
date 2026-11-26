@@ -604,11 +604,22 @@ def _delete_alias_after_success(
     account_id: str,
     email: str,
     created_alias: Optional[dict] = None,
+    account_emails: Optional[list[str]] = None,
 ) -> dict:
     """Best-effort post-registration cleanup that never fails the registration."""
-    safe, reason = _alias_delete_eligibility(email)
-    if not safe:
-        return {"ok": False, "skipped": True, "reason": reason}
+    addresses: list[str] = []
+    for address in [email, *(account_emails or [])]:
+        normalized = str(address or "").strip().lower()
+        if normalized and normalized not in addresses:
+            addresses.append(normalized)
+    for address in addresses:
+        safe, reason = _alias_delete_eligibility(address)
+        if not safe:
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": f"{address}：{reason}",
+            }
     anonymous_id = str((created_alias or {}).get("anonymousId") or "").strip()
     try:
         if not anonymous_id:
@@ -1469,6 +1480,10 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
             account_id=account_id,
             email=base_email,
             created_alias=created,
+            account_emails=[
+                str(item.get("email") or "")
+                for item in plan
+            ],
         )
         if alias_cleanup.get("ok"):
             _set_job(
