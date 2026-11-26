@@ -263,6 +263,7 @@ class BrowserFallback:
         self,
         auth_url: str,
         email: str = "",
+        password: str = "",
         *,
         cookies: list[dict[str, Any]] | None = None,
         otp_provider: Callable[[], str] | None = None,
@@ -293,14 +294,32 @@ class BrowserFallback:
                     logger.warning("切换 %s 浏览器处理风控关键步骤", driver)
                     if driver == "camoufox":
                         return self._run_camoufox(
-                            auth_url, email, cookies, otp_provider, browser_proxy, capture_auth
+                            auth_url,
+                            email,
+                            password,
+                            cookies,
+                            otp_provider,
+                            browser_proxy,
+                            capture_auth,
                         )
                     if driver == "cloak":
                         return self._run_cloak(
-                            auth_url, email, cookies, otp_provider, browser_proxy, capture_auth
+                            auth_url,
+                            email,
+                            password,
+                            cookies,
+                            otp_provider,
+                            browser_proxy,
+                            capture_auth,
                         )
                     return self._run_playwright(
-                        auth_url, email, cookies, otp_provider, browser_proxy, capture_auth
+                        auth_url,
+                        email,
+                        password,
+                        cookies,
+                        otp_provider,
+                        browser_proxy,
+                        capture_auth,
                     )
                 except Exception as exc:
                     msg = f"{driver}: {type(exc).__name__}: {exc}"
@@ -335,6 +354,7 @@ class BrowserFallback:
         self,
         auth_url: str,
         email: str,
+        password: str,
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
         browser_proxy_url: str,
@@ -380,6 +400,7 @@ class BrowserFallback:
                     "camoufox",
                     auth_url,
                     email,
+                    password,
                     cookies,
                     otp_provider,
                     capture_auth,
@@ -391,6 +412,7 @@ class BrowserFallback:
         self,
         auth_url: str,
         email: str,
+        password: str,
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
         browser_proxy_url: str,
@@ -419,6 +441,7 @@ class BrowserFallback:
                     "cloak",
                     auth_url,
                     email,
+                    password,
                     cookies,
                     otp_provider,
                     capture_auth,
@@ -435,6 +458,7 @@ class BrowserFallback:
         self,
         auth_url: str,
         email: str,
+        password: str,
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
         browser_proxy_url: str,
@@ -476,6 +500,7 @@ class BrowserFallback:
                         "playwright",
                         auth_url,
                         email,
+                        password,
                         cookies,
                         otp_provider,
                         capture_auth,
@@ -491,6 +516,7 @@ class BrowserFallback:
         driver: str,
         auth_url: str,
         email: str,
+        password: str,
         seed_cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
         capture_auth: bool,
@@ -500,6 +526,7 @@ class BrowserFallback:
         deadline = time.monotonic() + self.timeout
         challenge_passed = False
         email_submitted = False
+        password_submitted = False
         otp_submitted = False
         access_token = ""
 
@@ -587,6 +614,16 @@ class BrowserFallback:
             else:
                 continue
 
+            if capture_auth and email_submitted:
+                access_token = _read_access_token(page)
+                current_url = str(getattr(page, "url", "") or "")
+                if access_token or (
+                    "chatgpt.com" in current_url
+                    and "/api/auth/" not in current_url
+                    and "/auth/" not in current_url
+                ):
+                    break
+
             if not email_submitted and email:
                 field = _visible_locator(page, _EMAIL_SELECTORS)
                 if field is not None:
@@ -600,6 +637,19 @@ class BrowserFallback:
                         continue
                     except Exception as exc:
                         logger.debug("浏览器填写邮箱失败: %s", exc)
+
+            if password and not password_submitted:
+                field = _visible_locator(page, _PASSWORD_SELECTORS)
+                if field is not None:
+                    try:
+                        field.fill(password)
+                        if not _click_continue(page):
+                            page.keyboard.press("Enter")
+                        password_submitted = True
+                        page.wait_for_timeout(1800)
+                        continue
+                    except Exception as exc:
+                        logger.debug("浏览器填写密码失败: %s", exc)
 
             otp_field = _visible_locator(page, _OTP_SELECTORS)
             if otp_field is not None:
@@ -621,7 +671,10 @@ class BrowserFallback:
             # Key-step boundary: do not create account/profile data in the
             # browser without an explicit caller action. Protocol owns those
             # state transitions and the subsequent token exchange.
-            if _visible_locator(page, _PASSWORD_SELECTORS) is not None:
+            if (
+                _visible_locator(page, _PASSWORD_SELECTORS) is not None
+                and not password
+            ):
                 break
             if "/about-you" in str(page.url or "").lower():
                 break

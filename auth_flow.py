@@ -2190,6 +2190,78 @@ class AuthFlow:
             )
         return False
 
+    def _recover_session_with_browser(
+        self,
+        email: str,
+        password: str,
+        mail_provider: MailProvider,
+    ) -> bool:
+        """Create a fresh browser auth transaction and capture AT/ST in-browser."""
+        email = (email or "").strip().lower()
+        password = (password or "").strip()
+        if not email or not password:
+            return False
+        try:
+            csrf_token = self.get_csrf_token()
+            auth_url = self.get_auth_url(csrf_token, email=email)
+            otp_cutoff = time.time() - 2
+
+            def _otp_provider() -> str:
+                return str(
+                    mail_provider.wait_for_otp(
+                        email,
+                        timeout=max(
+                            10,
+                            int(self._get_env("OTP_TIMEOUT", "60")),
+                        ),
+                        issued_after=otp_cutoff,
+                    )
+                    or ""
+                )
+
+            browser = BrowserFallback(
+                proxy=self.config.proxy,
+                user_agent=self._ua,
+                locale=str(self._fingerprint.get("lang") or "en-US"),
+                timezone=str(self._fingerprint.get("timezone") or ""),
+                screen=str(self._fingerprint.get("screen") or ""),
+                browser_version=str(self._fingerprint.get("impersonate") or ""),
+                timeout=90.0,
+            )
+            result = browser.bootstrap(
+                auth_url,
+                email,
+                password,
+                cookies=self._export_protocol_cookies(),
+                otp_provider=_otp_provider,
+                capture_auth=True,
+            )
+            self._apply_browser_result(result, intent="login")
+            if result.access_token:
+                self.result.access_token = result.access_token
+            session_token = result.cookie_value(
+                "__Secure-next-auth.session-token",
+                domain_hint="chatgpt.com",
+            )
+            if session_token:
+                self.result.session_token = session_token
+            logger.warning(
+                "浏览器登录恢复: driver=%s st=%s at=%s stage=%s url=%s",
+                result.driver,
+                "有" if self.result.session_token else "无",
+                "有" if self.result.access_token else "无",
+                result.stage or "unknown",
+                (result.final_url or "")[:180],
+            )
+            return bool(self.result.session_token and self.result.access_token)
+        except Exception as exc:
+            logger.warning(
+                "浏览器登录恢复失败: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return False
+
     def warmup(self) -> bool:
         """GET chatgpt.com 种全套 cookie（含 oai-did），成功返回 True。
 
@@ -4727,7 +4799,13 @@ class AuthFlow:
             if not (self.result.refresh_token or self.result.access_token):
                 raise RuntimeError("流程完成但未获取 refresh_token/access_token")
         elif not self.result.is_valid():
-            raise RuntimeError("注册完成但未获取有效凭证")
+            logger.warning("注册完成但 session 回调失效，尝试用已设置密码重新登录取凭证")
+            if not self._recover_session_with_browser(
+                self.result.email or email,
+                self.result.password,
+                mail_provider,
+            ) or not self.result.is_valid():
+                raise RuntimeError("注册完成但未获取有效凭证")
 
         logger.info("注册流程完成!")
         return self.result

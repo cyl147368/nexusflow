@@ -594,6 +594,47 @@ class AuthFlowDeviceTest(unittest.TestCase):
             browser_cls.return_value.bootstrap.call_args.kwargs["capture_auth"]
         )
 
+    def test_browser_login_recovers_tokens_after_callback_expires(self):
+        flow = AuthFlow(Config(), env_overrides={"OTP_TIMEOUT": "30"})
+        result = BrowserFallbackResult(
+            driver="playwright",
+            final_url="https://chatgpt.com/",
+            stage="chatgpt_home",
+            title="ChatGPT",
+            user_agent="Chrome/146",
+            cookies=[
+                {
+                    "name": "__Secure-next-auth.session-token",
+                    "value": "fresh-session",
+                    "domain": ".chatgpt.com",
+                    "path": "/",
+                }
+            ],
+            access_token="fresh-access",
+        )
+        mail = type("Mail", (), {"wait_for_otp": lambda self, *a, **k: "123456"})()
+        with (
+            patch.object(flow, "get_csrf_token", return_value="csrf"),
+            patch.object(flow, "get_auth_url", return_value="https://auth.test/fresh"),
+            patch.object(flow, "_export_protocol_cookies", return_value=[]),
+            patch.object(flow, "_apply_browser_result"),
+            patch("auth_flow.BrowserFallback") as browser_cls,
+        ):
+            browser_cls.return_value.bootstrap.return_value = result
+            recovered = flow._recover_session_with_browser(
+                "alias@example.com",
+                "qweasd123456",
+                mail,
+            )
+
+        self.assertTrue(recovered)
+        self.assertEqual(flow.result.session_token, "fresh-session")
+        self.assertEqual(flow.result.access_token, "fresh-access")
+        self.assertEqual(
+            browser_cls.return_value.bootstrap.call_args.args[:3],
+            ("https://auth.test/fresh", "alias@example.com", "qweasd123456"),
+        )
+
     def test_signup_does_not_proceed_after_failed_browser_fallback(self):
         flow = AuthFlow(Config())
         with (
