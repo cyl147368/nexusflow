@@ -1,8 +1,9 @@
 import time
 import unittest
+from http.cookiejar import Cookie
 from unittest.mock import patch
 
-from auth_flow import AuthFlow, BrowserFallbackResult
+from auth_flow import AuthFlow, BrowserFallbackResult, _is_transient_cloudflare_cookie
 from config import Config
 
 
@@ -37,6 +38,60 @@ class _Session:
 
 
 class AuthFlowDeviceTest(unittest.TestCase):
+    @staticmethod
+    def _cookie(name: str, value: str, domain: str = ".chatgpt.com") -> Cookie:
+        return Cookie(
+            version=0,
+            name=name,
+            value=value,
+            port=None,
+            port_specified=False,
+            domain=domain,
+            domain_specified=True,
+            domain_initial_dot=domain.startswith("."),
+            path="/",
+            path_specified=True,
+            secure=True,
+            expires=int(time.time()) + 600,
+            discard=False,
+            comment=None,
+            comment_url=None,
+            rest={},
+        )
+
+    def test_protocol_cookie_export_reads_cookiejar_objects(self):
+        cookie = self._cookie("oai-did", "device-id")
+        cloudflare_cookie = self._cookie("__cf_bm", "must-not-export")
+
+        class CookieStore:
+            jar = [cookie, cloudflare_cookie]
+
+            def __iter__(self):
+                return iter([cookie.name, cloudflare_cookie.name])
+
+        flow = AuthFlow(Config())
+        flow.session = type("Session", (), {"cookies": CookieStore()})()
+
+        exported = flow._export_protocol_cookies()
+
+        self.assertEqual(len(exported), 1)
+        self.assertEqual(
+            {key: exported[0][key] for key in ("name", "value", "domain", "path")},
+            {
+                "name": "oai-did",
+                "value": "device-id",
+                "domain": ".chatgpt.com",
+                "path": "/",
+            },
+        )
+        self.assertGreater(exported[0]["expires"], time.time())
+
+    def test_cloudflare_transient_cookie_detection(self):
+        self.assertTrue(_is_transient_cloudflare_cookie("__cf_bm"))
+        self.assertTrue(_is_transient_cloudflare_cookie("cf_clearance"))
+        self.assertTrue(_is_transient_cloudflare_cookie("cf_chl_test"))
+        self.assertFalse(_is_transient_cloudflare_cookie("oai-did"))
+
     def test_password_registration_is_enabled_with_unified_default_password(self):
         class PasswordSession:
             def __init__(self):

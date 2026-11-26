@@ -89,6 +89,16 @@ class SentinelChallengeError(RuntimeError):
     """Sentinel/PoW 或 auth 风控状态反复失败，需要浏览器完成关键步骤。"""
 
 
+def _is_transient_cloudflare_cookie(name: str) -> bool:
+    """Return True for cookies that must be solved by the active browser."""
+    value = (name or "").lower()
+    return (
+        value in {"__cf_bm", "_cfuvid", "cf_clearance"}
+        or value.startswith("cf_chl_")
+        or value.startswith("__cf_waf_")
+    )
+
+
 class AuthResult:
     """认证结果"""
 
@@ -1909,7 +1919,12 @@ class AuthFlow:
         """Export the curl_cffi jar into the browser's Playwright format."""
         result: list[dict[str, Any]] = []
         try:
-            cookies = list(self.session.cookies)
+            cookie_store = self.session.cookies
+            # curl_cffi's Cookies object iterates over names, while its ``jar``
+            # contains the actual http.cookiejar.Cookie objects with domain and
+            # expiry metadata. Iterating the wrapper directly silently produced
+            # an empty browser seed.
+            cookies = list(getattr(cookie_store, "jar", cookie_store))
         except Exception:
             return result
         for cookie in cookies:
@@ -1919,18 +1934,26 @@ class AuthFlow:
             path = str(getattr(cookie, "path", "/") or "/")
             if not name or not value or not domain:
                 continue
+            # These cookies are scoped to the TLS/User-Agent family that solved
+            # the challenge. Reusing curl_cffi's challenge cookie inside
+            # Camoufox can invalidate both sessions, so let the browser solve
+            # Cloudflare from the same proxy exit IP and export its own value.
+            if _is_transient_cloudflare_cookie(name):
+                continue
+            try:
+                expires = float(getattr(cookie, "expires", 0) or 0)
+            except (TypeError, ValueError):
+                expires = 0
+            if expires and expires < time.time():
+                continue
             item: dict[str, Any] = {
                 "name": name,
                 "value": value,
                 "domain": domain,
                 "path": path,
             }
-            expires = getattr(cookie, "expires", None)
-            if expires is not None:
-                try:
-                    item["expires"] = float(expires)
-                except Exception:
-                    pass
+            if expires:
+                item["expires"] = expires
             result.append(item)
         return result
 
@@ -1969,7 +1992,12 @@ class AuthFlow:
             name = str(cookie.get("name", "") or "")
             value = str(cookie.get("value", "") or "")
             domain = str(cookie.get("domain", "") or "")
-            if not name or not value or not domain:
+            if (
+                not name
+                or not value
+                or not domain
+                or _is_transient_cloudflare_cookie(name)
+            ):
                 continue
             try:
                 self.session.cookies.set(
