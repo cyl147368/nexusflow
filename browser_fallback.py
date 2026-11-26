@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
+from local_proxy_bridge import proxy_for_browser
+
 logger = logging.getLogger(__name__)
 
 _BROWSER_LOCK = threading.BoundedSemaphore(1)
@@ -197,6 +199,8 @@ class BrowserFallback:
         headless: bool | None = None,
         timeout: float | None = None,
         user_agent: str = "",
+        locale: str = "",
+        timezone: str = "",
     ):
         self.proxy = proxy or ""
         self.enabled = (
@@ -207,17 +211,17 @@ class BrowserFallback:
         self.driver = (
             driver or os.getenv("BROWSER_FALLBACK_DRIVER", "auto")
         ).strip().lower()
-        self.headless = (
-            _env_bool("BROWSER_FALLBACK_HEADLESS", True)
-            if headless is None
-            else headless
-        )
+        if headless is None:
+            headless = _env_bool("BROWSER_FALLBACK_HEADLESS", not bool(os.getenv("DISPLAY")))
+        self.headless = headless
         self.timeout = (
             _env_float("BROWSER_FALLBACK_TIMEOUT", 75.0)
             if timeout is None
             else timeout
         )
         self.user_agent = user_agent
+        self.locale = locale or os.getenv("BROWSER_FALLBACK_LOCALE", "en-US")
+        self.timezone = timezone or os.getenv("BROWSER_FALLBACK_TIMEZONE", "")
 
     def bootstrap(
         self,
@@ -236,22 +240,42 @@ class BrowserFallback:
         acquired = _BROWSER_LOCK.acquire(timeout=max(1.0, self.timeout))
         if not acquired:
             raise BrowserFallbackError("浏览器回退并发锁等待超时")
+        close_proxy_bridge: Callable[[], None] | None = None
         try:
+            browser_proxy = ""
+            if self.proxy:
+                try:
+                    browser_proxy, close_proxy_bridge = proxy_for_browser(self.proxy)
+                except Exception as exc:
+                    raise BrowserFallbackError(
+                        f"代理桥启动失败: {type(exc).__name__}: {exc}"
+                    ) from exc
             errors: list[str] = []
             for driver in drivers:
                 try:
                     logger.warning("切换 %s 浏览器处理风控关键步骤", driver)
                     if driver == "camoufox":
-                        return self._run_camoufox(auth_url, email, cookies, otp_provider)
+                        return self._run_camoufox(
+                            auth_url, email, cookies, otp_provider, browser_proxy
+                        )
                     if driver == "cloak":
-                        return self._run_cloak(auth_url, email, cookies, otp_provider)
-                    return self._run_playwright(auth_url, email, cookies, otp_provider)
+                        return self._run_cloak(
+                            auth_url, email, cookies, otp_provider, browser_proxy
+                        )
+                    return self._run_playwright(
+                        auth_url, email, cookies, otp_provider, browser_proxy
+                    )
                 except Exception as exc:
                     msg = f"{driver}: {type(exc).__name__}: {exc}"
                     errors.append(msg)
                     logger.warning("浏览器回退失败（%s）", msg)
             raise BrowserFallbackError("; ".join(errors))
         finally:
+            if close_proxy_bridge is not None:
+                try:
+                    close_proxy_bridge()
+                except Exception as exc:
+                    logger.debug("代理桥关闭失败: %s", exc)
             _BROWSER_LOCK.release()
 
     def _drivers(self) -> list[str]:
@@ -272,6 +296,7 @@ class BrowserFallback:
         email: str,
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
+        browser_proxy_url: str,
     ) -> BrowserFallbackResult:
         from camoufox.sync_api import Camoufox
 
@@ -279,12 +304,22 @@ class BrowserFallback:
             "headless": self.headless,
             "humanize": True,
             "i_know_what_im_doing": True,
+            # GeoIP discovery cannot see through a loopback proxy bridge. Auth
+            # passes the protocol session's IP-derived locale/timezone instead.
+            "geoip": False,
         }
-        proxy = playwright_proxy(self.proxy)
+        proxy = playwright_proxy(browser_proxy_url)
         if proxy:
             kwargs["proxy"] = proxy
         with Camoufox(**kwargs) as browser:
-            context = browser.new_context(viewport={"width": 1366, "height": 768})
+            context_kwargs: dict[str, Any] = {
+                "viewport": {"width": 1366, "height": 768},
+            }
+            if self.locale:
+                context_kwargs["locale"] = self.locale
+            if self.timezone:
+                context_kwargs["timezone_id"] = self.timezone
+            context = browser.new_context(**context_kwargs)
             try:
                 return self._drive(context, "camoufox", auth_url, email, cookies, otp_provider)
             finally:
@@ -296,11 +331,20 @@ class BrowserFallback:
         email: str,
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
+        browser_proxy_url: str,
     ) -> BrowserFallbackResult:
         from cloakbrowser import launch
 
-        kwargs: dict[str, Any] = {"headless": self.headless}
-        proxy = playwright_proxy(self.proxy)
+        kwargs: dict[str, Any] = {
+            "headless": self.headless,
+            "humanize": True,
+            "geoip": False,
+        }
+        if self.locale:
+            kwargs["locale"] = self.locale
+        if self.timezone:
+            kwargs["timezone"] = self.timezone
+        proxy = playwright_proxy(browser_proxy_url)
         if proxy:
             kwargs["proxy"] = proxy
         browser = launch(**kwargs)
@@ -322,6 +366,7 @@ class BrowserFallback:
         email: str,
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
+        browser_proxy_url: str,
     ) -> BrowserFallbackResult:
         from playwright.sync_api import sync_playwright
 
@@ -338,13 +383,15 @@ class BrowserFallback:
             try:
                 context_kwargs: dict[str, Any] = {
                     "viewport": {"width": 1366, "height": 768},
-                    "locale": "en-US",
+                    "locale": self.locale or "en-US",
                 }
+                if self.timezone:
+                    context_kwargs["timezone_id"] = self.timezone
                 if "Chrome/" in self.user_agent and "HeadlessChrome" not in self.user_agent:
                     context_kwargs["user_agent"] = self.user_agent
                 else:
                     context_kwargs["user_agent"] = _CHROMIUM_USER_AGENT
-                proxy = playwright_proxy(self.proxy)
+                proxy = playwright_proxy(browser_proxy_url)
                 if proxy:
                     context_kwargs["proxy"] = proxy
                 context = browser.new_context(**context_kwargs)

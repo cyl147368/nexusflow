@@ -136,9 +136,15 @@ BROWSER_FALLBACK_ENABLED=1
 BROWSER_FALLBACK_DRIVER=auto      # auto / camoufox / cloak / playwright
 BROWSER_FALLBACK_MAX_ATTEMPTS=2
 BROWSER_FALLBACK_TIMEOUT=75
+BROWSER_FALLBACK_HEADLESS=0       # 容器内通过 Xvfb 以虚拟有头模式运行
 ```
 
+浏览器回退会先把带认证的 HTTP/SOCKS5 上游代理转换成仅监听
+`127.0.0.1` 的无认证代理桥。Camoufox、Playwright 和后续协议请求沿用同一个
+上游出口，避免“浏览器能过、协议却换 IP”的问题。
+
 浏览器回退有独立并发锁，默认同一时间只运行一个浏览器实例，避免批量注册时把服务器内存打满。
+Docker 启动脚本会自动启动 Xvfb，因此服务器上可以运行虚拟有头浏览器。
 
 主项目原有的「邮箱列表」「注册结果」「运行记录」「代理池」
 「接码配置」「自动导出」页面全部保留。

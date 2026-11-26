@@ -11,7 +11,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NEXUSFLOW_HOST=0.0.0.0 \
     NEXUSFLOW_PORT=8765 \
     NEXUSFLOW_DB_PATH=/app/runtime/webui.db \
-    NEXUSFLOW_LOG_DIR=/app/runtime/logs
+    NEXUSFLOW_LOG_DIR=/app/runtime/logs \
+    DISPLAY=:99 \
+    BROWSER_FALLBACK_HEADLESS=0
 
 WORKDIR /app
 RUN apt-get update \
@@ -53,7 +55,8 @@ RUN python -m playwright install --with-deps chromium \
     && python -m camoufox fetch
 COPY . .
 COPY --from=web-builder /src/webui/static ./webui/static
-RUN mkdir -p /app/runtime/logs
+RUN mkdir -p /app/runtime/logs \
+    && chmod +x /app/scripts/start_nexusflow.sh
 
 EXPOSE 8765
-CMD ["python", "start_webui.py", "--host", "0.0.0.0", "--port", "8765", "--no-browser"]
+CMD ["/app/scripts/start_nexusflow.sh"]

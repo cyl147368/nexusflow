@@ -2052,6 +2052,8 @@ class AuthFlow:
             browser = BrowserFallback(
                 proxy=self.config.proxy,
                 user_agent=self._ua,
+                locale=str(self._fingerprint.get("lang") or "en-US"),
+                timezone=str(self._fingerprint.get("timezone") or ""),
             )
             browser_result = browser.bootstrap(
                 auth_url,
