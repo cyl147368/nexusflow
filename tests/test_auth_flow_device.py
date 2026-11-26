@@ -62,9 +62,11 @@ class AuthFlowDeviceTest(unittest.TestCase):
     def test_protocol_cookie_export_reads_cookiejar_objects(self):
         cookie = self._cookie("oai-did", "device-id")
         cloudflare_cookie = self._cookie("__cf_bm", "must-not-export")
+        host_cookie = self._cookie("__Host-next-auth.csrf-token", "csrf")
+        secure_cookie = self._cookie("__Secure-next-auth.state", "state")
 
         class CookieStore:
-            jar = [cookie, cloudflare_cookie]
+            jar = [cookie, cloudflare_cookie, host_cookie, secure_cookie]
 
             def __iter__(self):
                 return iter([cookie.name, cloudflare_cookie.name])
@@ -74,17 +76,20 @@ class AuthFlowDeviceTest(unittest.TestCase):
 
         exported = flow._export_protocol_cookies()
 
-        self.assertEqual(len(exported), 1)
+        self.assertEqual(len(exported), 3)
+        by_name = {item["name"]: item for item in exported}
         self.assertEqual(
-            {key: exported[0][key] for key in ("name", "value", "domain", "path")},
+            {key: by_name["oai-did"][key] for key in ("value", "domain", "path")},
             {
-                "name": "oai-did",
                 "value": "device-id",
                 "domain": ".chatgpt.com",
                 "path": "/",
             },
         )
-        self.assertGreater(exported[0]["expires"], time.time())
+        self.assertGreater(by_name["oai-did"]["expires"], time.time())
+        self.assertEqual(by_name["__Host-next-auth.csrf-token"]["url"], "https://chatgpt.com/")
+        self.assertNotIn("domain", by_name["__Host-next-auth.csrf-token"])
+        self.assertTrue(by_name["__Secure-next-auth.state"]["secure"])
 
     def test_cloudflare_transient_cookie_detection(self):
         self.assertTrue(_is_transient_cloudflare_cookie("__cf_bm"))

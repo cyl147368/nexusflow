@@ -1946,12 +1946,28 @@ class AuthFlow:
                 expires = 0
             if expires and expires < time.time():
                 continue
-            item: dict[str, Any] = {
-                "name": name,
-                "value": value,
-                "domain": domain,
-                "path": path,
-            }
+            item: dict[str, Any] = {"name": name, "value": value, "path": path}
+            if name.startswith("__Host-"):
+                # __Host- cookies must not set Domain and are valid only from
+                # a secure origin. curl_cffi may store the host as a bare
+                # domain, while Playwright requires URL form for this prefix.
+                item["url"] = f"https://{domain.lstrip('.').strip('/')}/"
+                item["secure"] = True
+            else:
+                item["domain"] = domain
+                if name.startswith("__Secure-") or bool(
+                    getattr(cookie, "secure", False)
+                ):
+                    item["secure"] = True
+            if bool(getattr(cookie, "secure", False)):
+                item["secure"] = True
+            if bool(getattr(cookie, "has_nonstandard_attr", lambda _name: False)("HttpOnly")):
+                item["httpOnly"] = True
+            same_site = str(
+                (getattr(cookie, "_rest", {}) or {}).get("SameSite", "")
+            ).capitalize()
+            if same_site in {"Strict", "Lax", "None"}:
+                item["sameSite"] = same_site
             if expires:
                 item["expires"] = expires
             result.append(item)
