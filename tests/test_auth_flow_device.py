@@ -89,6 +89,7 @@ class AuthFlowDeviceTest(unittest.TestCase):
         self.assertGreater(by_name["oai-did"]["expires"], time.time())
         self.assertEqual(by_name["__Host-next-auth.csrf-token"]["url"], "https://chatgpt.com/")
         self.assertNotIn("domain", by_name["__Host-next-auth.csrf-token"])
+        self.assertNotIn("path", by_name["__Host-next-auth.csrf-token"])
         self.assertTrue(by_name["__Secure-next-auth.state"]["secure"])
 
     def test_cloudflare_transient_cookie_detection(self):

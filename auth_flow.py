@@ -1946,7 +1946,7 @@ class AuthFlow:
                 expires = 0
             if expires and expires < time.time():
                 continue
-            item: dict[str, Any] = {"name": name, "value": value, "path": path}
+            item: dict[str, Any] = {"name": name, "value": value}
             if name.startswith("__Host-"):
                 # __Host- cookies must not set Domain and are valid only from
                 # a secure origin. curl_cffi may store the host as a bare
@@ -1955,6 +1955,7 @@ class AuthFlow:
                 item["secure"] = True
             else:
                 item["domain"] = domain
+                item["path"] = path
                 if name.startswith("__Secure-") or bool(
                     getattr(cookie, "secure", False)
                 ):
