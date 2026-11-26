@@ -204,6 +204,8 @@ def _click_resend(page: Any) -> bool:
     for selector in (
         'button:has-text("Resend")',
         'a:has-text("Resend")',
+        'button:has-text("Kirim ulang")',
+        'a:has-text("Kirim ulang")',
         'button:has-text("重新发送")',
         'a:has-text("重新发送")',
     ):
@@ -216,8 +218,8 @@ def _click_resend(page: Any) -> bool:
             continue
     for text in _RESEND_TEXTS:
         try:
-            locator = page.get_by_text(text, exact=False).first
-            if locator.is_visible(timeout=250):
+            locator = page.get_by_role("button", name=text, exact=False).first
+            if locator.is_visible(timeout=250) and locator.is_enabled(timeout=250):
                 locator.click(timeout=5000)
                 return True
         except Exception:
@@ -755,12 +757,17 @@ class BrowserFallback:
             if otp_field is not None:
                 if otp_provider is not None and not otp_submitted:
                     try:
+                        logger.info("浏览器已进入验证码页，等待邮箱验证码")
                         if not resend_clicked and not otp_login_clicked:
                             if _click_resend(page):
                                 logger.info("浏览器已请求重新发送验证码")
                                 page.wait_for_timeout(1200)
                             resend_clicked = True
                         code = str(otp_provider() or "").strip()
+                        logger.info(
+                            "浏览器收到验证码: %s",
+                            "有" if code else "无",
+                        )
                         if re.fullmatch(r"\d{4,8}", code):
                             otp_field.fill(code)
                             page.keyboard.press("Enter")
