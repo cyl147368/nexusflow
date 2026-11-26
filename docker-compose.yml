@@ -88,13 +88,14 @@ services:
     restart: unless-stopped
     environment:
       AIRPORT_SUBSCRIPTION_URL: "${AIRPORT_SUBSCRIPTION_URL:-}"
+      MIHOMO_CONTROLLER_SECRET: "${MIHOMO_CONTROLLER_SECRET:-}"
       MIHOMO_HOME: "/data"
       TZ: "${TZ:-Asia/Shanghai}"
     entrypoint: ["/bin/sh", "/opt/mihomo/entrypoint.sh"]
     volumes:
       - ./services/mihomo/entrypoint.sh:/opt/mihomo/entrypoint.sh:ro
       - mihomo-data:/data
-    expose: ["17890", "17891", "17892", "17893"]
+    expose: ["17890", "17891", "17892", "17893", "9090"]
     networks: [nexusflow]
 
   updater:

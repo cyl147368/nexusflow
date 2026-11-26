@@ -16,6 +16,8 @@ log-level: warning
 ipv6: false
 unified-delay: true
 tcp-concurrent: true
+external-controller: 0.0.0.0:9090
+secret: "${MIHOMO_CONTROLLER_SECRET:-}"
 
 dns:
   enable: true
