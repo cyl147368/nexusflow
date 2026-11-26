@@ -1046,6 +1046,135 @@ class IntegrationApiTest(unittest.TestCase):
             "plus_eligible",
         )
 
+    def test_team_promo_check_classifies_persists_and_filters(self):
+        from webui import db
+
+        db.save_registered({
+            "email": "team-ok@example.com",
+            "workflow_scope": "integration",
+            "access_token": "team-ok-token",
+        })
+        db.save_registered({
+            "email": "team-no@example.com",
+            "workflow_scope": "integration",
+            "access_token": "team-no-token",
+        })
+        db.save_registered({
+            "email": "team-invalid@example.com",
+            "workflow_scope": "integration",
+            "access_token": "team-invalid-token",
+        })
+
+        class FakeResponse:
+            def __init__(self, status_code, body):
+                self.status_code = status_code
+                self.body = body
+                self.text = ""
+
+            def json(self):
+                return self.body
+
+        class FakeSession:
+            def get(self, url, headers=None, timeout=0):
+                del timeout
+                token = (headers or {}).get("Authorization", "")
+                if "team-invalid-token" in token and "accounts/check" in url:
+                    return FakeResponse(401, {"error": "invalid token"})
+                if "accounts/check" in url:
+                    return FakeResponse(200, {
+                        "accounts": {
+                            "default": {
+                                "account": {
+                                    "account_id": "acct-personal",
+                                    "structure": "personal",
+                                    "name": "Personal",
+                                    "plan_type": "free",
+                                },
+                                "entitlement": {
+                                    "has_active_subscription": False,
+                                },
+                            }
+                        }
+                    })
+                if "promo_campaign/check_coupon" in url:
+                    expected = url.split("coupon=", 1)[1].split("&", 1)[0]
+                    state = "eligible" if "team-ok-token" in token else "not_eligible"
+                    return FakeResponse(200, {
+                        "coupon": expected,
+                        "state": state,
+                        "ineligibility_reason": (
+                            "" if state == "eligible" else "prior_introductory_offer_redeemed"
+                        ),
+                        "redemption": {"redeemed": False},
+                    })
+                return FakeResponse(404, {})
+
+            def close(self):
+                return None
+
+        with patch(
+            "http_client.create_http_session",
+            return_value=FakeSession(),
+        ):
+            response = self.client.post(
+                "/api/registered/check_team_promo_fast",
+                json={
+                    "emails": [
+                        "team-ok@example.com",
+                        "team-no@example.com",
+                        "team-invalid@example.com",
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        self.assertEqual(results["team-ok@example.com"]["status"], "team_eligible")
+        self.assertEqual(results["team-no@example.com"]["status"], "team_ineligible")
+        self.assertEqual(results["team-invalid@example.com"]["status"], "token_invalid")
+
+        stored = db.get_registered("team-ok@example.com")["extra"]["team_promo_check"]
+        self.assertEqual(stored["coupon"], "team-1-month-free")
+        self.assertEqual(stored["account_name"], "Personal")
+        filtered = self.client.get(
+            "/api/registered",
+            params={"filter": "team_eligible", "workflow_scope": "integration"},
+        ).json()
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["items"][0]["team_promo_check"]["status"], "team_eligible")
+
+    def test_team_promo_unchecked_emails_only_include_at_and_unchecked(self):
+        from webui import db
+
+        db.save_registered({
+            "email": "team-unchecked@example.com",
+            "workflow_scope": "integration",
+            "access_token": "team-unchecked-token",
+        })
+        db.save_registered({
+            "email": "team-no-at@example.com",
+            "workflow_scope": "integration",
+            "access_token": "",
+        })
+        db.save_registered({
+            "email": "team-checked@example.com",
+            "workflow_scope": "integration",
+            "access_token": "team-checked-token",
+        })
+        db.update_team_promo_check(
+            "team-checked@example.com",
+            {"status": "team_ineligible", "label": "不符合Team"},
+        )
+
+        response = self.client.get(
+            "/api/registered/team_promo_emails",
+            params={"workflow_scope": "integration"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["emails"], ["team-unchecked@example.com"])
+        self.assertEqual(body["skipped_no_at"], 1)
+
     def test_refresh_access_tokens_endpoint(self):
         def refresh(email, proxy):
             return {

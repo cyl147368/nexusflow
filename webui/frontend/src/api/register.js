@@ -29,6 +29,11 @@ export const listRetestEmails = (workflowScope = '') =>
     params: { workflow_scope: workflowScope },
   })
 
+export const listTeamPromoEmails = (workflowScope = '', mode = 'unchecked') =>
+  http.get('/api/registered/team_promo_emails', {
+    params: { workflow_scope: workflowScope, mode },
+  })
+
 export const getRegistered = (email) =>
   http.get(`/api/registered/${encodeURIComponent(email)}`)
 
@@ -52,6 +57,9 @@ export const exportRegistered = (payload) => http.post('/api/registered/export',
 
 export const checkPlus = (emails, proxy = '') =>
   http.post('/api/registered/check_plus_fast', { emails, proxy })
+
+export const checkTeamPromo = (emails) =>
+  http.post('/api/registered/check_team_promo_fast', { emails })
 
 export const getPlusSchedule = () =>
   http.get('/api/plus/schedule')

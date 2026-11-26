@@ -932,8 +932,8 @@ def update_registered_manual(email: str, password: Optional[str] = None,
         return True
 
 
-def update_plus_check(email: str, plus_info: dict) -> None:
-    """把 Plus 检查结果写入 extra_json.plus_check。"""
+def update_registered_check(email: str, key: str, info: dict) -> None:
+    """Merge one named check result into registered.extra_json."""
     email = email.lower()
     con = _conn()
     cur = con.execute("SELECT extra_json FROM registered WHERE email=?", (email,))
@@ -946,13 +946,23 @@ def update_plus_check(email: str, plus_info: dict) -> None:
             extra = json.loads(row["extra_json"])
         except Exception:
             extra = {}
-    extra["plus_check"] = plus_info
+    extra[str(key)] = info
     with _lock:
         con.execute(
             "UPDATE registered SET extra_json=? WHERE email=?",
             (json.dumps(extra, ensure_ascii=False), email),
         )
         con.commit()
+
+
+def update_plus_check(email: str, plus_info: dict) -> None:
+    """把 Plus 检查结果写入 extra_json.plus_check。"""
+    update_registered_check(email, "plus_check", plus_info)
+
+
+def update_team_promo_check(email: str, promo_info: dict) -> None:
+    """把 Team 优惠资格写入 extra_json.team_promo_check。"""
+    update_registered_check(email, "team_promo_check", promo_info)
 
 
 def update_registered_tokens(
@@ -1039,6 +1049,12 @@ def _registered_where(
         # token_invalid 从 2026-08-10 起会写库，得能筛出来，否则等于埋了：
         # 它既不在 unchecked 里（已有结论），又不在 free/plus/banned 里。
         clauses.append("extra_json LIKE '%\"token_invalid\"%'")
+    elif filt == "team_eligible":
+        clauses.append("extra_json LIKE '%\"team_eligible\"%'")
+    elif filt == "team_unchecked":
+        clauses.append(
+            "(extra_json IS NULL OR extra_json NOT LIKE '%\"team_promo_check\"%')"
+        )
     if require_access_token:
         clauses.append("coalesce(length(access_token), 0) > 0")
     scope = (workflow_scope or "").strip().lower()
@@ -1097,12 +1113,14 @@ def list_registered(
     for r in raw_rows:
         d = dict(r)
         plus = None
+        team_promo = None
         credential_source = "registration"
         credential_source_label = "自动注册"
         if d.get("extra_json"):
             try:
                 extra = json.loads(d["extra_json"])
                 plus = extra.get("plus_check")
+                team_promo = extra.get("team_promo_check")
                 credential_source = (
                     extra.get("credential_source") or credential_source
                 )
@@ -1113,6 +1131,7 @@ def list_registered(
             except Exception:
                 pass
         d["plus_check"] = plus
+        d["team_promo_check"] = team_promo
         d["credential_source"] = credential_source
         d["credential_source_label"] = credential_source_label
         d.pop("extra_json", None)

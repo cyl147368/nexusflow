@@ -758,6 +758,32 @@ def api_registered_retest_emails(
     }
 
 
+@app.get("/api/registered/team_promo_emails")
+def api_registered_team_promo_emails(
+    workflow_scope: str = "",
+    mode: str = "unchecked",
+    limit: int = 50000,
+):
+    """Return Team-promo targets across all pages, not only the visible page."""
+    scope = _workflow_scope(workflow_scope)
+    filter_rt = "team_unchecked" if mode == "unchecked" else "all"
+    emails = db.list_registered_emails(
+        filter_rt=filter_rt,
+        workflow_scope=scope,
+        limit=max(1, min(int(limit), 50000)),
+        require_access_token=True,
+    )
+    total = db.count_registered(filter_rt=filter_rt, workflow_scope=scope)
+    return {
+        "ok": True,
+        "emails": emails,
+        "total": len(emails),
+        "skipped_no_at": max(0, total - len(emails)),
+        "workflow_scope": scope,
+        "mode": "unchecked" if mode == "unchecked" else "all",
+    }
+
+
 @app.get("/api/registered/{email}")
 def api_registered_one(email: str):
     row = db.get_registered(email)
@@ -1205,6 +1231,11 @@ class CheckPlusReq(BaseModel):
     workers: int = Field(3, ge=1, le=6, description="并行检测数")
 
 
+class CheckTeamPromoReq(BaseModel):
+    emails: list[str] = Field(..., description="要检查 Team 优惠的邮箱列表")
+    workers: int = Field(3, ge=1, le=6, description="并行检测数")
+
+
 class PlusScheduleReq(BaseModel):
     enabled: Optional[bool] = None
     interval_hours: Optional[float] = Field(None, ge=0.25, le=168)
@@ -1356,21 +1387,28 @@ def _classify_plus_payload(data: dict) -> dict:
     return {"status": "free", "label": "Free"}
 
 
-_PLUS_COUPON_URL = (
-    "https://chatgpt.com/backend-api/promo_campaign/check_coupon"
-    "?coupon=plus-1-month-free&is_coupon_from_query_param=true"
-)
+_PROMO_COUPON_BASE = "https://chatgpt.com/backend-api/promo_campaign/check_coupon"
+_PLUS_PROMO_COUPON = "plus-1-month-free"
+_TEAM_PROMO_COUPON = "team-1-month-free"
 
 
-def _probe_plus_coupon(sess, headers: dict, timeout: int = 15) -> dict:
-    """Ask OpenAI whether the one-month Plus coupon is redeemable.
+def _probe_promo_coupon(
+    sess,
+    headers: dict,
+    coupon: str,
+    timeout: int = 15,
+) -> dict:
+    """Read the authoritative eligibility state for one OpenAI promo coupon.
 
-    ``accounts/check`` only exposes a campaign hint. The coupon check is the
-    authoritative, read-only answer and prevents stale campaign hints from
-    being shown as a still-claimable trial.
+    This endpoint is read-only. It does not redeem the coupon or create a
+    checkout/session.
     """
+    url = (
+        f"{_PROMO_COUPON_BASE}?coupon={coupon}"
+        "&is_coupon_from_query_param=true"
+    )
     try:
-        resp = sess.get(_PLUS_COUPON_URL, headers=headers, timeout=timeout)
+        resp = sess.get(url, headers=headers, timeout=timeout)
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False,
@@ -1396,8 +1434,49 @@ def _probe_plus_coupon(sess, headers: dict, timeout: int = 15) -> dict:
     return {
         "ok": True,
         "state": state,
+        "coupon": str(body.get("coupon") or "").strip(),
+        "ineligibility_reason": str(body.get("ineligibility_reason") or "").strip(),
         "redeemed": redemption.get("redeemed") is True,
     }
+
+
+def _probe_plus_coupon(sess, headers: dict, timeout: int = 15) -> dict:
+    """Compatibility wrapper for the legacy Plus trial check."""
+    return _probe_promo_coupon(
+        sess,
+        headers,
+        _PLUS_PROMO_COUPON,
+        timeout=timeout,
+    )
+
+
+def _team_account_candidates(payload: dict) -> list[dict]:
+    """Normalize the accounts/check response used by the Team promo probe."""
+    source = payload.get("accounts")
+    if source is None:
+        data = payload.get("data")
+        source = data.get("accounts") if isinstance(data, dict) else None
+    if not isinstance(source, dict):
+        return []
+    unique = {}
+    for key, value in source.items():
+        account = value.get("account", value) if isinstance(value, dict) else value
+        if not isinstance(account, dict):
+            continue
+        account_id = str(
+            account.get("account_id")
+            or account.get("id")
+            or (key if re.fullmatch(r"[0-9a-f-]{36}", str(key)) else "")
+        ).strip()
+        if not account_id or account_id == "default":
+            continue
+        entitlement = value.get("entitlement", {}) if isinstance(value, dict) else {}
+        unique[account_id] = {
+            "id": account_id,
+            "account": account,
+            "entitlement": entitlement if isinstance(entitlement, dict) else {},
+        }
+    return list(unique.values())
 
 
 def _confirm_plus_trial(
@@ -1761,6 +1840,197 @@ def api_check_plus_fast(req: CheckPlusReq):
     for email, info in results.items():
         if info["status"] not in {"not_found", "no_at", "error"}:
             db.update_plus_check(
+                email,
+                {**info, "checked_at": checked_at},
+            )
+    return {
+        "ok": True,
+        "results": results,
+        "note": "；".join(dict.fromkeys(notes)),
+        "workers": used_workers,
+    }
+
+
+@app.post("/api/registered/check_team_promo_fast")
+def api_check_team_promo_fast(req: CheckTeamPromoReq):
+    """Read-only batch check for the one-month ChatGPT Team trial coupon."""
+    from concurrent.futures import ThreadPoolExecutor
+    from http_client import create_http_session
+
+    log = logging.getLogger("webui")
+    accounts_url = "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/145.0.0.0 Safari/537.36"
+    )
+    results: dict[str, dict] = {}
+    jobs = []
+
+    for raw_email in req.emails:
+        email = str(raw_email or "").strip().lower()
+        if not email or email in results or any(job[0] == email for job in jobs):
+            continue
+        cred = db.get_registered(email)
+        if not cred:
+            results[email] = {"status": "not_found", "label": "未找到"}
+            continue
+        access_token = str(cred.get("access_token") or "").strip()
+        if not access_token:
+            results[email] = {"status": "no_at", "label": "无AT"}
+            continue
+        try:
+            claims = _get_auth(_decode_jwt_payload(access_token))
+        except Exception:  # noqa: BLE001
+            claims = {}
+        jobs.append((
+            email,
+            access_token,
+            str(
+                claims.get("chatgpt_account_id")
+                or claims.get("account_id")
+                or ""
+            ).strip(),
+            str(cred.get("device_id") or "").strip(),
+            str(cred.get("cookie_header") or "").strip(),
+        ))
+
+    def check_job(job):
+        email, access_token, account_id, device_id, cookie_header = job
+        note = ""
+        try:
+            sess = create_http_session(proxy=None, impersonate="chrome110")
+        except Exception as exc:  # noqa: BLE001
+            return email, {"status": "error", "label": "创建会话失败"}, str(exc)
+        try:
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "User-Agent": ua,
+                "Origin": "https://chatgpt.com",
+                "Referer": "https://chatgpt.com/",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            }
+            if device_id:
+                headers["OAI-Device-Id"] = device_id
+            if account_id:
+                headers["ChatGPT-Account-ID"] = account_id
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+
+            try:
+                accounts_resp = sess.get(accounts_url, headers=headers, timeout=20)
+            except Exception as exc:  # noqa: BLE001
+                note = f"账号查询网络失败: {type(exc).__name__}"
+                return email, {"status": "error", "label": "网络失败"}, note
+            if accounts_resp.status_code in {401, 403}:
+                body = _body_text(accounts_resp)
+                if _looks_deactivated(body):
+                    return email, {"status": "banned", "label": "封号"}, ""
+                if accounts_resp.status_code == 401:
+                    return email, {"status": "token_invalid", "label": "凭证失效"}, ""
+                return email, {"status": "error", "label": "HTTP 403"}, ""
+            if accounts_resp.status_code != 200:
+                return email, {
+                    "status": "error",
+                    "label": f"HTTP {accounts_resp.status_code}",
+                }, ""
+            try:
+                accounts_payload = accounts_resp.json()
+            except Exception:  # noqa: BLE001
+                return email, {"status": "error", "label": "账号响应非 JSON"}, ""
+            candidates = _team_account_candidates(accounts_payload)
+            selected = next(
+                (
+                    item
+                    for item in candidates
+                    if str(item["account"].get("structure") or "").lower()
+                    == "personal"
+                ),
+                candidates[0] if candidates else None,
+            )
+            if not selected:
+                return email, {
+                    "status": "error",
+                    "label": "未找到个人账户",
+                }, ""
+            headers["ChatGPT-Account-ID"] = selected["id"]
+            probe = _probe_promo_coupon(
+                sess,
+                headers,
+                _TEAM_PROMO_COUPON,
+                timeout=20,
+            )
+            if not probe.get("ok"):
+                state = str(probe.get("state") or "")
+                if state == "http_401":
+                    return email, {
+                        "status": "token_invalid",
+                        "label": "凭证失效",
+                    }, ""
+                return email, {
+                    "status": "error",
+                    "label": "Team资格检测失败",
+                    "coupon_state": state,
+                }, str(probe.get("error") or "")
+            if probe.get("coupon") != _TEAM_PROMO_COUPON:
+                return email, {
+                    "status": "error",
+                    "label": "活动响应异常",
+                    "coupon_state": probe.get("state", ""),
+                }, ""
+            state = str(probe.get("state") or "")
+            account = selected["account"]
+            entitlement = selected["entitlement"]
+            common = {
+                "coupon": _TEAM_PROMO_COUPON,
+                "coupon_state": state,
+                "ineligibility_reason": probe.get("ineligibility_reason", ""),
+                "redeemed": bool(probe.get("redeemed")),
+                "account_name": str(account.get("name") or account.get("structure") or ""),
+                "plan_type": str(account.get("plan_type") or ""),
+                "has_active_subscription": bool(
+                    entitlement.get("has_active_subscription")
+                ),
+            }
+            if state == "eligible" and not probe.get("redeemed"):
+                return email, {
+                    "status": "team_eligible",
+                    "label": "可领Team试用",
+                    **common,
+                }, ""
+            if state in {"not_eligible", "ineligible"} or probe.get("redeemed"):
+                return email, {
+                    "status": "team_ineligible",
+                    "label": "不符合Team",
+                    **common,
+                }, ""
+            return email, {
+                "status": "error",
+                "label": "Team资格状态未知",
+                **common,
+            }, ""
+        finally:
+            try:
+                sess.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    notes = []
+    used_workers = 0
+    if jobs:
+        used_workers = min(req.workers, max(1, len(jobs)))
+        with ThreadPoolExecutor(max_workers=used_workers) as pool:
+            for email, info, note in pool.map(check_job, jobs):
+                results[email] = info
+                if note:
+                    notes.append(note)
+                    log.warning(f"[check_team_promo] {email}: {note}")
+
+    checked_at = time.time()
+    for email, info in results.items():
+        if info["status"] not in {"not_found", "no_at", "error"}:
+            db.update_team_promo_check(
                 email,
                 {**info, "checked_at": checked_at},
             )

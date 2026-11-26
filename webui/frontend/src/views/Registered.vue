@@ -3,9 +3,9 @@ import { computed, onActivated, onDeactivated, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  listRegistered, listUncheckedEmails, listRetestEmails,
+  listRegistered, listUncheckedEmails, listRetestEmails, listTeamPromoEmails,
   getRegistered, deleteRegistered,
-  bulkDeleteRegistered, bulkDeleteAccounts, checkPlus, refreshAccessTokens,
+  bulkDeleteRegistered, bulkDeleteAccounts, checkPlus, checkTeamPromo, refreshAccessTokens,
   listExportFormats, exportRegistered, updateCredentials,
   getPlusSchedule, updatePlusSchedule, runPlusScheduleNow as runPlusScheduleNowApi,
 } from '@/api/register'
@@ -34,9 +34,12 @@ const workflowFilter = ref('integration')
 const selected = ref([])
 const loading = ref(false)
 const checking = ref(false)
+const teamChecking = ref(false)
 const refreshingAT = ref(false)
 const checkResult = ref('')
+const teamResult = ref('')
 const currentPlusTotal = ref(null)
+const currentTeamTotal = ref(null)
 const plusSchedule = ref({
   enabled: true,
   interval_hours: 3,
@@ -61,7 +64,24 @@ const PLUS_TYPE = {
   token_invalid: 'danger',
   banned: 'danger', error: 'danger',
 }
+const TEAM_TYPE = {
+  team_eligible: 'success',
+  team_ineligible: 'warning',
+  banned: 'danger',
+  token_invalid: 'danger',
+  error: 'danger',
+}
 function plusOf(row) { return row.plus_check || null }
+function teamOf(row) { return row.team_promo_check || null }
+function teamReason(row) {
+  const info = teamOf(row)
+  if (!info) return ''
+  if (info.redeemed) return '原因：该优惠已经兑换'
+  return {
+    prior_introductory_offer_redeemed: '原因：此前已兑换过入门优惠',
+    promo_ineligible: '原因：不符合活动资格',
+  }[info.ineligibility_reason] || (info.ineligibility_reason ? `原因：${info.ineligibility_reason}` : '')
+}
 function workflowLabel(scope) {
   return {
     legacy: '原有流程',
@@ -111,7 +131,7 @@ async function load(resetPage) {
     const { items, total: t } = response
     rows.value = items
     total.value = t
-    await loadPlusTotal()
+    await Promise.all([loadPlusTotal(), loadTeamTotal()])
   } catch (e) { ElMessage.error(e.message) }
   finally { loading.value = false }
 }
@@ -127,6 +147,20 @@ async function loadPlusTotal() {
     currentPlusTotal.value = Number(result.total || 0)
   } catch (_) {
     currentPlusTotal.value = null
+  }
+}
+
+async function loadTeamTotal() {
+  try {
+    const result = await listRegistered({
+      limit: 1,
+      offset: 0,
+      filter: 'team_eligible',
+      workflow_scope: workflowFilter.value,
+    })
+    currentTeamTotal.value = Number(result.total || 0)
+  } catch (_) {
+    currentTeamTotal.value = null
   }
 }
 
@@ -185,6 +219,15 @@ async function collectEmails(mode) {
   return rows.value.map((r) => r.email)
 }
 
+async function collectTeamEmails(mode) {
+  if (mode === 'selected') return selected.value.map((row) => row.email)
+  const { emails } = await listTeamPromoEmails(
+    workflowFilter.value,
+    mode === 'unchecked' ? 'unchecked' : 'all',
+  )
+  return emails
+}
+
 async function doCheck(mode) {
   checking.value = true
   checkResult.value = '正在准备待检测账号...'
@@ -235,6 +278,55 @@ async function doCheck(mode) {
     checkResult.value = ''
     ElMessage.error('检查失败: ' + e.message)
   } finally { checking.value = false }
+}
+
+async function doTeamCheck(mode) {
+  teamChecking.value = true
+  teamResult.value = '正在准备待检测账号...'
+  try {
+    const emails = await collectTeamEmails(mode)
+    if (!emails.length) {
+      ElMessage.info(mode === 'unchecked' ? '当前流程没有未检测 Team 的账号' : '当前没有可检测的号')
+      return
+    }
+    const batchSize = 20
+    const merged = {}
+    let note = ''
+    for (let start = 0; start < emails.length; start += batchSize) {
+      const batch = emails.slice(start, start + batchSize)
+      teamResult.value = `检查 Team... ${Math.min(start + batch.length, emails.length)}/${emails.length}`
+      const response = await checkTeamPromo(batch)
+      Object.assign(merged, response.results || {})
+      note = response.note || note
+    }
+    let eligible = 0, ineligible = 0, banned = 0, failed = 0, badToken = 0
+    let noAt = 0, notFound = 0
+    for (const [email, info] of Object.entries(merged)) {
+      const row = rows.value.find((item) => item.email === email)
+      if (row) row.team_promo_check = info
+      if (info.status === 'team_eligible') eligible++
+      else if (info.status === 'team_ineligible') ineligible++
+      else if (info.status === 'banned') banned++
+      else if (info.status === 'token_invalid') badToken++
+      else if (info.status === 'no_at') noAt++
+      else if (info.status === 'not_found') notFound++
+      else if (info.status === 'error') failed++
+    }
+    const parts = [`本次 Team 检测: ${eligible} 可领, ${ineligible} 不符合`]
+    if (banned) parts.push(`${banned} 个封号`)
+    if (badToken) parts.push(`${badToken} 个凭证失效`)
+    if (noAt) parts.push(`${noAt} 个无AT，已跳过`)
+    if (notFound) parts.push(`${notFound} 个记录已不存在`)
+    if (failed) parts.push(`${failed} 个没检测成`)
+    if (note) parts.push(note)
+    teamResult.value = parts.join(' · ')
+    await load()
+  } catch (error) {
+    teamResult.value = ''
+    ElMessage.error('Team 优惠检测失败: ' + error.message)
+  } finally {
+    teamChecking.value = false
+  }
 }
 
 async function refreshSelectedAT() {
@@ -594,6 +686,7 @@ onDeactivated(() => {
           <el-option label="未检测" value="unchecked" />
           <el-option label="Free" value="free" />
           <el-option label="可领Plus" value="plus" />
+          <el-option label="可领Team" value="team_eligible" />
           <el-option label="已封号" value="banned" />
           <el-option label="凭证失效" value="token_invalid" />
         </el-select>
@@ -608,6 +701,10 @@ onDeactivated(() => {
         <el-button :loading="checking" @click="doCheck('all')">重新检查</el-button>
         <el-button :loading="checking" :disabled="!selected.length" @click="doCheck('selected')">
           检测选中 ({{ selected.length }})
+        </el-button>
+        <el-button :loading="teamChecking" @click="doTeamCheck('unchecked')">检查Team未检测</el-button>
+        <el-button :loading="teamChecking" :disabled="!selected.length" @click="doTeamCheck('selected')">
+          检测选中Team ({{ selected.length }})
         </el-button>
           <el-button :loading="refreshingAT" :disabled="!selected.length" @click="refreshSelectedAT">
             刷新选中 AT ({{ selected.length }})
@@ -636,7 +733,11 @@ onDeactivated(() => {
         <el-tag v-if="currentPlusTotal !== null" type="success" effect="plain">
           当前可领Plus {{ currentPlusTotal }}
         </el-tag>
+        <el-tag v-if="currentTeamTotal !== null" type="success" effect="plain">
+          当前可领Team {{ currentTeamTotal }}
+        </el-tag>
         <span class="hint">{{ checkResult }}</span>
+        <span v-if="teamResult" class="hint">{{ teamResult }}</span>
       </el-space>
 
       <el-skeleton v-if="loading && !rows.length" :rows="6" animated style="padding: 8px 0" />
@@ -700,6 +801,15 @@ onDeactivated(() => {
         <el-table-column label="Plus状态" width="120">
           <template #default="{ row }">
             <StatusDot v-if="plusOf(row)" :type="PLUS_TYPE[plusOf(row).status] || 'info'" :text="plusOf(row).label" />
+            <span v-else class="hint">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="Team优惠" width="130">
+          <template #default="{ row }">
+            <el-tooltip v-if="teamOf(row) && teamReason(row)" :content="teamReason(row)" placement="top">
+              <span><StatusDot :type="TEAM_TYPE[teamOf(row).status] || 'info'" :text="teamOf(row).label" /></span>
+            </el-tooltip>
+            <StatusDot v-else-if="teamOf(row)" :type="TEAM_TYPE[teamOf(row).status] || 'info'" :text="teamOf(row).label" />
             <span v-else class="hint">—</span>
           </template>
         </el-table-column>
