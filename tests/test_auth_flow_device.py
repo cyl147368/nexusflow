@@ -558,6 +558,42 @@ class AuthFlowDeviceTest(unittest.TestCase):
 
         self.assertTrue(ok)
 
+    def test_browser_callback_capture_returns_session_and_access_token(self):
+        flow = AuthFlow(Config())
+        result = BrowserFallbackResult(
+            driver="playwright",
+            final_url="https://chatgpt.com/",
+            stage="chatgpt_home",
+            title="ChatGPT",
+            user_agent="Chrome/146",
+            cookies=[
+                {
+                    "name": "__Secure-next-auth.session-token",
+                    "value": "session-token",
+                    "domain": ".chatgpt.com",
+                    "path": "/",
+                }
+            ],
+            access_token="access-token",
+        )
+        with (
+            patch.object(flow, "_export_protocol_cookies", return_value=[]),
+            patch.object(flow, "_apply_browser_result"),
+            patch("auth_flow.BrowserFallback") as browser_cls,
+        ):
+            browser_cls.return_value.bootstrap.return_value = result
+            captured = flow._capture_callback_with_browser(
+                "https://chatgpt.com/api/auth/callback/openai?code=one"
+            )
+
+        self.assertTrue(captured)
+        self.assertEqual(flow.result.session_token, "session-token")
+        self.assertEqual(flow.result.access_token, "access-token")
+        browser_cls.return_value.bootstrap.assert_called_once()
+        self.assertTrue(
+            browser_cls.return_value.bootstrap.call_args.kwargs["capture_auth"]
+        )
+
     def test_signup_does_not_proceed_after_failed_browser_fallback(self):
         flow = AuthFlow(Config())
         with (

@@ -124,6 +124,7 @@ class BrowserFallbackResult:
     cookies: list[dict[str, Any]] = field(default_factory=list)
     challenge_passed: bool = False
     email_submitted: bool = False
+    access_token: str = ""
 
     def cookie_value(self, name: str, domain_hint: str = "") -> str:
         fallback = ""
@@ -189,6 +190,37 @@ def _is_challenge(page: Any, body: str = "") -> bool:
     return any(marker in text for marker in _CHALLENGE_MARKERS)
 
 
+def _read_access_token(page: Any) -> str:
+    """Read the authenticated ChatGPT session token inside the browser."""
+    try:
+        payload = page.evaluate(
+            """
+            async () => {
+              try {
+                const response = await fetch('/api/auth/session', {
+                  credentials: 'include',
+                  headers: {'Accept': 'application/json'}
+                });
+                if (!response.ok) return {status: response.status};
+                const data = await response.json();
+                return {
+                  status: response.status,
+                  accessToken: data.accessToken || data.access_token || '',
+                  email: (data.user && data.user.email) || ''
+                };
+              } catch (error) {
+                return {status: 0, error: String(error)};
+              }
+            }
+            """
+        )
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("accessToken") or "").strip()
+
+
 class BrowserFallback:
     def __init__(
         self,
@@ -201,7 +233,6 @@ class BrowserFallback:
         user_agent: str = "",
         locale: str = "",
         timezone: str = "",
-        exit_ip: str = "",
         screen: str = "",
         browser_version: str = "",
     ):
@@ -225,7 +256,6 @@ class BrowserFallback:
         self.user_agent = user_agent
         self.locale = locale or os.getenv("BROWSER_FALLBACK_LOCALE", "en-US")
         self.timezone = timezone or os.getenv("BROWSER_FALLBACK_TIMEZONE", "")
-        self.exit_ip = exit_ip or ""
         self.screen = screen or ""
         self.browser_version = browser_version or ""
 
@@ -236,6 +266,7 @@ class BrowserFallback:
         *,
         cookies: list[dict[str, Any]] | None = None,
         otp_provider: Callable[[], str] | None = None,
+        capture_auth: bool = False,
     ) -> BrowserFallbackResult:
         if not self.enabled:
             raise BrowserFallbackError("浏览器回退未启用")
@@ -262,14 +293,14 @@ class BrowserFallback:
                     logger.warning("切换 %s 浏览器处理风控关键步骤", driver)
                     if driver == "camoufox":
                         return self._run_camoufox(
-                            auth_url, email, cookies, otp_provider, browser_proxy
+                            auth_url, email, cookies, otp_provider, browser_proxy, capture_auth
                         )
                     if driver == "cloak":
                         return self._run_cloak(
-                            auth_url, email, cookies, otp_provider, browser_proxy
+                            auth_url, email, cookies, otp_provider, browser_proxy, capture_auth
                         )
                     return self._run_playwright(
-                        auth_url, email, cookies, otp_provider, browser_proxy
+                        auth_url, email, cookies, otp_provider, browser_proxy, capture_auth
                     )
                 except Exception as exc:
                     msg = f"{driver}: {type(exc).__name__}: {exc}"
@@ -303,6 +334,7 @@ class BrowserFallback:
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
         browser_proxy_url: str,
+        capture_auth: bool,
     ) -> BrowserFallbackResult:
         from camoufox.sync_api import Camoufox
 
@@ -311,9 +343,9 @@ class BrowserFallback:
             "humanize": True,
             "i_know_what_im_doing": True,
             # The loopback bridge hides the upstream address from Camoufox's
-            # automatic GeoIP probe. Auth supplies the already-observed exit IP
-            # so Camoufox configures country/locale/timezone from the same route.
-            "geoip": self.exit_ip or False,
+            # automatic GeoIP probe, so Auth passes the IP-derived locale and
+            # timezone explicitly below.
+            "geoip": False,
             # Keep the browser identity in the same family/version as the
             # protocol session that created the authorize transaction.
             "os": ["windows"],
@@ -339,7 +371,15 @@ class BrowserFallback:
                 context_kwargs["timezone_id"] = self.timezone
             context = browser.new_context(**context_kwargs)
             try:
-                return self._drive(context, "camoufox", auth_url, email, cookies, otp_provider)
+                return self._drive(
+                    context,
+                    "camoufox",
+                    auth_url,
+                    email,
+                    cookies,
+                    otp_provider,
+                    capture_auth,
+                )
             finally:
                 context.close()
 
@@ -350,6 +390,7 @@ class BrowserFallback:
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
         browser_proxy_url: str,
+        capture_auth: bool,
     ) -> BrowserFallbackResult:
         from cloakbrowser import launch
 
@@ -369,7 +410,15 @@ class BrowserFallback:
         try:
             context = browser.new_context(viewport={"width": 1366, "height": 768})
             try:
-                return self._drive(context, "cloak", auth_url, email, cookies, otp_provider)
+                return self._drive(
+                    context,
+                    "cloak",
+                    auth_url,
+                    email,
+                    cookies,
+                    otp_provider,
+                    capture_auth,
+                )
             finally:
                 context.close()
         finally:
@@ -385,6 +434,7 @@ class BrowserFallback:
         cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
         browser_proxy_url: str,
+        capture_auth: bool,
     ) -> BrowserFallbackResult:
         from playwright.sync_api import sync_playwright
 
@@ -418,7 +468,13 @@ class BrowserFallback:
                 )
                 try:
                     return self._drive(
-                        context, "playwright", auth_url, email, cookies, otp_provider
+                        context,
+                        "playwright",
+                        auth_url,
+                        email,
+                        cookies,
+                        otp_provider,
+                        capture_auth,
                     )
                 finally:
                     context.close()
@@ -433,6 +489,7 @@ class BrowserFallback:
         email: str,
         seed_cookies: list[dict[str, Any]] | None,
         otp_provider: Callable[[], str] | None,
+        capture_auth: bool,
     ) -> BrowserFallbackResult:
         page = context.new_page()
         page.set_default_timeout(8000)
@@ -440,6 +497,7 @@ class BrowserFallback:
         challenge_passed = False
         email_submitted = False
         otp_submitted = False
+        access_token = ""
 
         if seed_cookies:
             safe_cookies = []
@@ -481,6 +539,41 @@ class BrowserFallback:
                 page.goto(target, wait_until="domcontentloaded", timeout=45000)
             except Exception as exc:
                 logger.debug("浏览器 auth 页面未完全加载: %s", exc)
+
+        if capture_auth:
+            while time.monotonic() < deadline:
+                page.wait_for_timeout(1000)
+                body = _body_text(page)
+                if _is_challenge(page, body):
+                    continue
+                challenge_passed = True
+                access_token = _read_access_token(page)
+                current_url = str(getattr(page, "url", "") or "")
+                if access_token or (
+                    "chatgpt.com" in current_url
+                    and "/api/auth/" not in current_url
+                ):
+                    break
+            cookies = [dict(cookie) for cookie in context.cookies()]
+            try:
+                title = str(page.title() or "")
+            except Exception:
+                title = ""
+            try:
+                user_agent = str(page.evaluate("navigator.userAgent") or "")
+            except Exception:
+                user_agent = self.user_agent
+            return BrowserFallbackResult(
+                driver=driver,
+                final_url=str(getattr(page, "url", "") or ""),
+                stage=classify_auth_stage(str(getattr(page, "url", "") or "")),
+                title=title,
+                user_agent=user_agent or self.user_agent,
+                cookies=cookies,
+                challenge_passed=challenge_passed,
+                email_submitted=False,
+                access_token=access_token,
+            )
 
         while time.monotonic() < deadline:
             page.wait_for_timeout(1200)
@@ -550,6 +643,7 @@ class BrowserFallback:
             cookies=cookies,
             challenge_passed=challenge_passed,
             email_submitted=email_submitted,
+            access_token=access_token,
         )
 
 

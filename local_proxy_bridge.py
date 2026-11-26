@@ -86,6 +86,7 @@ class LocalProxyBridge:
     _loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
     _thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _port: int = field(default=0, init=False, repr=False)
+    _client_tasks: set[asyncio.Task[None]] = field(default_factory=set, init=False, repr=False)
 
     @property
     def local_url(self) -> str:
@@ -106,7 +107,7 @@ class LocalProxyBridge:
                 self._loop = loop
                 server = loop.run_until_complete(
                     asyncio.start_server(
-                        self._handle_client,
+                        self._accept_client,
                         self.listen_host,
                         self.listen_port,
                         limit=_MAX_HEADER_BYTES,
@@ -130,6 +131,7 @@ class LocalProxyBridge:
                     task.cancel()
                 if pending:
                     loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                self._client_tasks.clear()
                 loop.close()
                 self._loop = None
                 self._server = None
@@ -153,6 +155,11 @@ class LocalProxyBridge:
                 if server is not None:
                     server.close()
                     await server.wait_closed()
+                tasks = [task for task in self._client_tasks if not task.done()]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
             try:
                 asyncio.run_coroutine_threadsafe(close_server(), loop).result(timeout=3)
@@ -176,6 +183,15 @@ class LocalProxyBridge:
 
     def __exit__(self, *_exc: object) -> None:
         self.stop()
+
+    def _accept_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        task = asyncio.create_task(self._handle_client(reader, writer))
+        self._client_tasks.add(task)
+        task.add_done_callback(self._client_tasks.discard)
 
     async def _handle_client(
         self,
@@ -202,7 +218,9 @@ class LocalProxyBridge:
             writer.write(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: NexusFlow\r\n\r\n")
             await writer.drain()
             await self._relay(reader, writer, upstream_reader, upstream_writer)
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError, GeneratorExit) as exc:
+            if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
+                raise
             logger.debug("本地代理桥连接失败: %s: %s", type(exc).__name__, exc)
             try:
                 writer.write(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")

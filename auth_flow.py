@@ -152,7 +152,6 @@ class AuthFlow:
         self._env_overrides = dict(env_overrides or {})
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
-        self._exit_ip = ""
         self._flow_started_at = time.time()
         self._fingerprint = _stable_firefox_fingerprint()
         self._ua = self._fingerprint["user_agent"]
@@ -2083,7 +2082,6 @@ class AuthFlow:
                 user_agent=self._ua,
                 locale=str(self._fingerprint.get("lang") or "en-US"),
                 timezone=str(self._fingerprint.get("timezone") or ""),
-                exit_ip=self._exit_ip,
                 screen=str(self._fingerprint.get("screen") or ""),
                 browser_version=str(self._fingerprint.get("impersonate") or ""),
             )
@@ -2126,6 +2124,70 @@ class AuthFlow:
             logger.warning("浏览器关键步骤回退失败: %s", exc)
         except Exception as exc:
             logger.warning("浏览器关键步骤回退异常: %s: %s", type(exc).__name__, exc)
+        return False
+
+    def _capture_callback_with_browser(
+        self,
+        callback_url: str,
+        *,
+        intent: str = "signup",
+    ) -> bool:
+        """Consume the one-time OAuth callback in the browser that passed CF.
+
+        The callback code is single-use. Letting curl_cffi consume it while its
+        TLS/User-Agent family differs from the browser that solved authorize can
+        leave NextAuth without a session cookie. Capturing the callback in the
+        browser also lets us read ``/api/auth/session`` while its cookies and
+        clearance are still valid.
+        """
+        if not callback_url or "code=" not in callback_url:
+            return False
+        try:
+            capture_timeout = float(
+                self._get_env("BROWSER_SESSION_CAPTURE_TIMEOUT", "35")
+            )
+        except Exception:
+            capture_timeout = 35.0
+        try:
+            browser = BrowserFallback(
+                proxy=self.config.proxy,
+                user_agent=self._ua,
+                locale=str(self._fingerprint.get("lang") or "en-US"),
+                timezone=str(self._fingerprint.get("timezone") or ""),
+                screen=str(self._fingerprint.get("screen") or ""),
+                browser_version=str(self._fingerprint.get("impersonate") or ""),
+                timeout=max(10.0, min(capture_timeout, 90.0)),
+            )
+            result = browser.bootstrap(
+                callback_url,
+                cookies=self._export_protocol_cookies(),
+                capture_auth=True,
+            )
+            self._apply_browser_result(result, intent=intent)
+            if result.access_token:
+                self.result.access_token = result.access_token
+            session_token = result.cookie_value(
+                "__Secure-next-auth.session-token",
+                domain_hint="chatgpt.com",
+            )
+            if session_token:
+                self.result.session_token = session_token
+            logger.warning(
+                "浏览器消费 callback: driver=%s st=%s at=%s stage=%s",
+                result.driver,
+                "有" if session_token else "无",
+                "有" if result.access_token else "无",
+                result.stage or "unknown",
+            )
+            return bool(session_token or result.access_token)
+        except BrowserFallbackError as exc:
+            logger.warning("浏览器消费 callback 失败: %s", exc)
+        except Exception as exc:
+            logger.warning(
+                "浏览器消费 callback 异常: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
         return False
 
     def warmup(self) -> bool:
@@ -2252,7 +2314,6 @@ class AuthFlow:
                 loc = re.search(r"loc=(\w+)", resp.text)
                 ip = re.search(r"ip=([^\n]+)", resp.text)
                 country_code = loc.group(1) if loc else ""
-                self._exit_ip = ip.group(1).strip() if ip else ""
                 logger.info(f"网络正常 - IP: {ip.group(1) if ip else 'N/A'}, "
                             f"地区: {country_code or 'N/A'}")
 
@@ -4629,7 +4690,8 @@ class AuthFlow:
         #       Codex RT exchange 用独立 authorize 链路，跟 chatgpt callback 不冲突。
         if (not refresh_only_mode) and callback_url:
             logger.debug("消费 callback 触发 NextAuth Set-Cookie (session-token)")
-            self._consume_callback_for_session(callback_url)
+            if not self._capture_callback_with_browser(callback_url):
+                self._consume_callback_for_session(callback_url)
 
         if not refresh_only_mode:
             self.get_auth_session()
