@@ -322,23 +322,40 @@ func (c *Client) request(method, rawURL string, body any, timeout time.Duration,
 		resp.Body.Close()
 
 		// 从 Set-Cookie 响应头更新 Cookie（模拟浏览器行为,iCloud 会刷新 token）
-		for _, sc := range resp.Cookies() {
-			if sc.MaxAge < 0 || (sc.MaxAge == 0 && !sc.Expires.IsZero() && !sc.Expires.After(time.Now())) {
-				delete(c.Cookies, sc.Name)
-			} else if sc.Name != "" {
-				if c.Cookies == nil {
-					c.Cookies = make(map[string]string)
-				}
-				c.Cookies[sc.Name] = sc.Value
-			}
-		}
+                if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+                        for _, sc := range resp.Cookies() {
+                                if sc.MaxAge < 0 || (sc.MaxAge == 0 && !sc.Expires.IsZero() && !sc.Expires.After(time.Now())) {
+                                        delete(c.Cookies, sc.Name)
+                                } else if sc.Name != "" {
+                                        if c.Cookies == nil {
+                                                c.Cookies = make(map[string]string)
+                                        }
+                                        c.Cookies[sc.Name] = sc.Value
+                                }
+                        }
+                }
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			snippet := string(text)
 			if len(snippet) > 200 {
 				snippet = snippet[:200]
 			}
-			lastErr = &responseError{status: resp.StatusCode, body: snippet}
+                        lastErr = &responseError{status: resp.StatusCode, body: snippet}
+                        if resp.StatusCode == 421 {
+                                trustToken := gjson.GetBytes(text, "trustTokens.0").String()
+                                if trustToken != "" {
+                                        if c.Cookies == nil {
+                                                c.Cookies = make(map[string]string)
+                                        }
+                                        c.Cookies["X-APPLE-WEBAUTH-HSA-TRUST"] = trustToken
+                                        c.serviceURL = ""
+                                        c.setupURL = ""
+                                        if attempt < maxAttempts {
+                                                c.sleepRetry(attempt)
+                                                continue
+                                        }
+                                }
+                        }
 			// 401/403 说明 Cookie 失效,不重试直接返回。
 			if resp.StatusCode == 401 || resp.StatusCode == 403 {
 				return "", lastErr
