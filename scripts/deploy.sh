@@ -43,10 +43,15 @@ ensure_env() {
 ensure_env PAYMENT_DETECTOR_TOKEN "$(openssl rand -hex 32)"
 ensure_env NEXUSFLOW_UPDATER_TOKEN "$(openssl rand -hex 32)"
 ensure_env NEXUSFLOW_REPO_PATH "$ROOT"
+ensure_env AIRPORT_SUBSCRIPTION_URL ""
 
 docker compose pull --ignore-buildable || true
 docker compose build
 docker compose up -d
+
+if grep -q '^AIRPORT_SUBSCRIPTION_URL=.\+' .env; then
+  docker compose --profile airport up -d mihomo
+fi
 
 echo
 echo "[NexusFlow] Deployment complete"

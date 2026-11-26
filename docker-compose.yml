@@ -82,6 +82,21 @@ services:
     expose: ["8091"]
     networks: [nexusflow]
 
+  mihomo:
+    image: "${MIHOMO_IMAGE:-metacubex/mihomo:latest}"
+    profiles: ["airport"]
+    restart: unless-stopped
+    environment:
+      AIRPORT_SUBSCRIPTION_URL: "${AIRPORT_SUBSCRIPTION_URL:-}"
+      MIHOMO_HOME: "/data"
+      TZ: "${TZ:-Asia/Shanghai}"
+    entrypoint: ["/bin/sh", "/opt/mihomo/entrypoint.sh"]
+    volumes:
+      - ./services/mihomo/entrypoint.sh:/opt/mihomo/entrypoint.sh:ro
+      - mihomo-data:/data
+    expose: ["17890", "17891", "17892", "17893"]
+    networks: [nexusflow]
+
   updater:
     build:
       context: ./services/updater
@@ -106,3 +121,4 @@ volumes:
   mail-hub-data:
   payment-results:
   updater-state:
+  mihomo-data:

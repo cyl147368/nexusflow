@@ -186,6 +186,18 @@ MoMo 和 UPI 分别需要越南、印度地区出口代理。服务器上已保�
 
 ## 本地开发
 
+### 机场代理入口（可选）
+
+服务器有 Clash/Mihomo 订阅时，可把订阅地址写入服务器 `.env`：
+
+```dotenv
+AIRPORT_SUBSCRIPTION_URL=https://provider.example/api/v1/client/subscribe?token=...
+```
+
+一键部署会启动内部 `mihomo` 服务，并提供 `17890`（自动）、`17891`
+（美国）、`17892`（日本）、`17893`（新加坡）四个 HTTP/SOCKS5 混合入口。
+香港节点被显式排除。它们只存在于 Docker 内部网络，不会向公网暴露。
+
 ### 主 WebUI
 
 ```bash
