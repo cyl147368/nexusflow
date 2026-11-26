@@ -1642,6 +1642,9 @@ def get_integration_config() -> dict:
             else ""
         ),
         "browser_fallback": get_setting("nx_browser_fallback", "1") in ("1", "true"),
+        "delete_alias_after_registration": get_setting(
+            "nx_delete_alias_after_registration", "1"
+        ) in ("1", "true"),
         "continuous": get_setting("nx_continuous", "1") in ("1", "true"),
         "target_count": int(get_setting("nx_target_count", "0") or 0),
         "cool_down_seconds": int(get_setting("nx_cool_down_seconds", "30") or 30),
@@ -1681,8 +1684,13 @@ def get_integration_internal_config() -> dict:
         "want_2fa",
         "want_password",
         "browser_fallback",
+        "delete_alias_after_registration",
     ):
-        default = "1" if key in {"want_password", "browser_fallback"} else (
+        default = "1" if key in {
+            "want_password",
+            "browser_fallback",
+            "delete_alias_after_registration",
+        } else (
             "0" if key == "want_2fa" else "1"
         )
         cfg[key] = get_setting(f"nx_{key}", default) in (
@@ -1727,6 +1735,7 @@ def save_integration_config(data: dict) -> None:
         "want_access_token", "want_session_token", "want_refresh_token", "want_2fa",
         "want_password",
         "browser_fallback",
+        "delete_alias_after_registration",
         "continuous", "auto_qualify",
     ):
         if key in data:

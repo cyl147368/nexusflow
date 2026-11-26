@@ -13,6 +13,8 @@ export const listICloudAliases = (accountId = '') =>
   http.get('/api/integration/icloud/aliases', { params: { account_id: accountId } })
 export const deleteICloudAlias = (payload) =>
   http.post('/api/integration/icloud/aliases/delete', payload)
+export const cleanupICloudAliases = (payload) =>
+  http.post('/api/integration/icloud/aliases/cleanup', payload)
 export const setICloudAliasState = (payload) =>
   http.post('/api/integration/icloud/aliases/state', payload)
 export const startIntegration = () => http.post('/api/integration/start')

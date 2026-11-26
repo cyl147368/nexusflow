@@ -93,6 +93,21 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(update.status_code, 200)
         self.assertEqual(update.json()["config"]["registration_password"], "***")
 
+    def test_alias_cleanup_config_defaults_and_persists(self):
+        from webui import db
+
+        self.assertTrue(
+            db.get_integration_config()["delete_alias_after_registration"]
+        )
+        response = self.client.post(
+            "/api/integration/config",
+            json={"delete_alias_after_registration": False},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(
+            response.json()["config"]["delete_alias_after_registration"]
+        )
+
     def test_continuous_config_preserves_zero_values(self):
         response = self.client.post(
             "/api/integration/config",
@@ -139,6 +154,136 @@ class IntegrationApiTest(unittest.TestCase):
                 address,
                 r"^hidden\.alias\+[a-z]{4}@icloud\.com$",
             )
+
+    def test_safe_alias_cleanup_requires_complete_credentials(self):
+        from webui import integration
+
+        aliases = [
+            {
+                "email": "complete@icloud.com",
+                "anonymousId": "alias-complete",
+            },
+            {
+                "email": "missing-token@icloud.com",
+                "anonymousId": "alias-missing-token",
+            },
+            {
+                "email": "unknown@icloud.com",
+                "anonymousId": "alias-unknown",
+            },
+        ]
+        rows = {
+            "complete@icloud.com": {
+                "password": "qweasd123456",
+                "totp_secret": "TOTP",
+                "access_token": "AT",
+                "session_token": "ST",
+            },
+            "missing-token@icloud.com": {
+                "password": "qweasd123456",
+                "totp_secret": "TOTP",
+                "access_token": "AT",
+                "session_token": "",
+            },
+        }
+        with (
+            patch.object(
+                integration.db,
+                "get_integration_internal_config",
+                return_value={"icloud_account_id": "account"},
+            ),
+            patch.object(
+                integration,
+                "list_icloud_aliases",
+                return_value={"aliases": aliases},
+            ),
+            patch.object(
+                integration.db,
+                "get_registered",
+                side_effect=lambda email: rows.get(email.lower()),
+            ),
+        ):
+            preview = integration.cleanup_safe_icloud_aliases(dry_run=True)
+
+        self.assertTrue(preview["dry_run"])
+        self.assertEqual(preview["eligible"], 1)
+        self.assertEqual(preview["skipped"], 2)
+        self.assertEqual(
+            preview["candidates"][0]["email"],
+            "complete@icloud.com",
+        )
+
+    def test_safe_alias_cleanup_deletes_only_eligible_alias(self):
+        from webui import integration
+
+        with (
+            patch.object(
+                integration.db,
+                "get_integration_internal_config",
+                return_value={"icloud_account_id": "account"},
+            ),
+            patch.object(
+                integration,
+                "list_icloud_aliases",
+                return_value={
+                    "aliases": [
+                        {
+                            "email": "complete@icloud.com",
+                            "anonymousId": "alias-complete",
+                        },
+                        {
+                            "email": "unknown@icloud.com",
+                            "anonymousId": "alias-unknown",
+                        },
+                    ]
+                },
+            ),
+            patch.object(
+                integration.db,
+                "get_registered",
+                side_effect=lambda email: (
+                    {
+                        "password": "qweasd123456",
+                        "totp_secret": "TOTP",
+                        "access_token": "AT",
+                        "session_token": "ST",
+                    }
+                    if email == "complete@icloud.com"
+                    else None
+                ),
+            ),
+            patch.object(integration, "delete_icloud_alias") as delete,
+        ):
+            result = integration.cleanup_safe_icloud_aliases(dry_run=False)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deleted"], 1)
+        delete.assert_called_once_with("account", "alias-complete")
+
+    def test_post_success_cleanup_deletes_created_alias(self):
+        from webui import integration
+
+        with (
+            patch.object(
+                integration.db,
+                "get_registered",
+                return_value={
+                    "password": "qweasd123456",
+                    "totp_secret": "TOTP",
+                    "access_token": "AT",
+                    "session_token": "ST",
+                },
+            ),
+            patch.object(integration, "delete_icloud_alias") as delete,
+        ):
+            result = integration._delete_alias_after_success(
+                account_id="account",
+                email="complete@icloud.com",
+                created_alias={"anonymousId": "alias-complete"},
+            )
+
+        self.assertTrue(result["ok"])
+        delete.assert_called_once_with("account", "alias-complete")
 
     def test_cycle_registers_original_and_split_mailboxes(self):
         from webui import integration

@@ -2187,6 +2187,7 @@ class IntegrationConfigReq(BaseModel):
     want_password: Optional[bool] = None
     registration_password: Optional[str] = None
     browser_fallback: Optional[bool] = None
+    delete_alias_after_registration: Optional[bool] = None
     continuous: Optional[bool] = None
     target_count: Optional[int] = None
     cool_down_seconds: Optional[int] = None
@@ -2218,6 +2219,11 @@ class ICloudAliasStateReq(BaseModel):
     account_id: Optional[str] = None
     anonymous_id: str
     active: bool
+
+
+class ICloudAliasCleanupReq(BaseModel):
+    account_id: Optional[str] = None
+    dry_run: bool = True
 
 
 class PaymentCheckReq(BaseModel):
@@ -2336,6 +2342,17 @@ def api_integration_icloud_aliases(account_id: str = ""):
 def api_integration_icloud_alias_delete(req: ICloudAliasDeleteReq):
     try:
         return integration.delete_icloud_alias(req.account_id or "", req.anonymous_id)
+    except integration.IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/integration/icloud/aliases/cleanup")
+def api_integration_icloud_alias_cleanup(req: ICloudAliasCleanupReq):
+    try:
+        return integration.cleanup_safe_icloud_aliases(
+            dry_run=req.dry_run,
+            account_id=req.account_id or "",
+        )
     except integration.IntegrationError as exc:
         raise HTTPException(400, str(exc)) from exc
 

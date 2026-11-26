@@ -3,6 +3,7 @@ import { computed, onActivated, onDeactivated, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import {
+  cleanupICloudAliases,
   createICloudAccount,
   deleteICloudAlias,
   getIntegrationConfig,
@@ -36,6 +37,7 @@ const activeStep = ref(0)
 const accounts = ref([])
 const aliases = ref([])
 const aliasesBusy = ref(false)
+const cleanupAliasesBusy = ref(false)
 const aliasSearch = ref('')
 const aliasStatus = ref('all')
 const aliasPage = ref(1)
@@ -74,6 +76,7 @@ const form = ref({
   want_password: true,
   registration_password: 'qweasd123456',
   browser_fallback: true,
+  delete_alias_after_registration: true,
   continuous: true,
   target_count: 0,
   cool_down_seconds: 30,
@@ -327,6 +330,39 @@ async function loadAliases() {
     ElMessage.error(e.message)
   } finally {
     aliasesBusy.value = false
+  }
+}
+
+async function cleanupSafeAliases() {
+  cleanupAliasesBusy.value = true
+  try {
+    const preview = await cleanupICloudAliases({
+      account_id: form.value.icloud_account_id,
+      dry_run: true,
+    })
+    if (!Number(preview.eligible || 0)) {
+      ElMessage.warning('没有符合条件的隐私邮箱：账号必须同时有密码、2FA、AT 和 ST')
+      return
+    }
+    await ElMessageBox.confirm(
+      `检测到 ${preview.eligible} 个可安全删除的隐私邮箱。`
+      + '它们对应的账号均已保存密码、2FA、Access Token 和 Session Token。永久删除后不可恢复。',
+      '清理已完成的隐私邮箱',
+      { type: 'warning', confirmButtonText: '永久删除', cancelButtonText: '取消' },
+    )
+    const result = await cleanupICloudAliases({
+      account_id: form.value.icloud_account_id,
+      dry_run: false,
+    })
+    ElMessage.success(
+      `已删除 ${result.deleted || 0} 个隐私邮箱`
+      + (result.failed ? `，失败 ${result.failed} 个` : ''),
+    )
+    await loadAliases()
+  } catch (e) {
+    if (e !== 'cancel' && e?.message !== 'cancel') ElMessage.error(e.message)
+  } finally {
+    cleanupAliasesBusy.value = false
   }
 }
 
@@ -648,9 +684,19 @@ onDeactivated(stopPolling)
               </div>
               <p>可搜索、复制、暂停转发或永久删除；备注来自创建时的标签。</p>
             </div>
-            <el-button type="primary" plain :loading="aliasesBusy" @click="loadAliases">
-              刷新列表
-            </el-button>
+            <div>
+              <el-button
+                type="warning"
+                plain
+                :loading="cleanupAliasesBusy"
+                @click="cleanupSafeAliases"
+              >
+                清理已完成账号的隐私邮箱
+              </el-button>
+              <el-button type="primary" plain :loading="aliasesBusy" @click="loadAliases">
+                刷新列表
+              </el-button>
+            </div>
           </div>
         </template>
 
@@ -824,6 +870,7 @@ onDeactivated(stopPolling)
             <el-checkbox v-model="form.want_2fa">注册后绑定 2FA</el-checkbox>
             <el-checkbox v-model="form.want_password">注册设置密码</el-checkbox>
             <el-checkbox v-model="form.browser_fallback">风控混合回退</el-checkbox>
+            <el-checkbox v-model="form.delete_alias_after_registration">注册成功后删除隐私邮箱</el-checkbox>
           </div>
           <el-form-item v-if="form.want_password" label="统一注册密码">
             <el-input

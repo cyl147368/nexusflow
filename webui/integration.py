@@ -503,6 +503,142 @@ def delete_icloud_alias(account_id: str, anonymous_id: str) -> dict:
     return {"ok": True, "result": _data(response)}
 
 
+def _alias_delete_eligibility(email: str) -> tuple[bool, str]:
+    """Only retire aliases backed by a fully usable local account.
+
+    The operator explicitly requested deletion after password and 2FA are
+    available. Requiring the access/session tokens as well prevents an early
+    2FA secret (which is persisted before the whole registration finishes)
+    from making an incomplete account look safe.
+    """
+    address = (email or "").strip().lower()
+    row = db.get_registered(address) if address else None
+    if not row:
+        return False, "没有注册记录"
+    for key, missing in (
+        ("password", "缺少密码"),
+        ("totp_secret", "缺少 2FA"),
+        ("access_token", "缺少 Access Token"),
+        ("session_token", "缺少 Session Token"),
+    ):
+        if not str(row.get(key) or "").strip():
+            return False, missing
+    return True, ""
+
+
+def cleanup_safe_icloud_aliases(
+    *,
+    dry_run: bool = True,
+    account_id: str = "",
+) -> dict:
+    """Delete aliases whose accounts have password, 2FA, AT and ST.
+
+    Aliases without an anonymous ID, failed registrations, passwordless
+    accounts and accounts with incomplete credentials are retained.
+    """
+    cfg = db.get_integration_internal_config()
+    account_id = (account_id or cfg.get("icloud_account_id") or "").strip()
+    if not account_id:
+        raise IntegrationError("请先配置 iCloud 账号")
+    aliases = list_icloud_aliases(account_id).get("aliases") or []
+    candidates: list[dict] = []
+    skipped: list[dict] = []
+    for alias in aliases:
+        email = str(alias.get("email") or "").strip().lower()
+        anonymous_id = str(alias.get("anonymousId") or "").strip()
+        safe, reason = _alias_delete_eligibility(email)
+        if not safe:
+            skipped.append({"email": email, "reason": reason})
+            continue
+        if not anonymous_id:
+            skipped.append({"email": email, "reason": "缺少 anonymousId"})
+            continue
+        candidates.append(
+            {
+                "email": email,
+                "anonymous_id": anonymous_id,
+                "label": str(alias.get("label") or ""),
+            }
+        )
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "aliases": len(aliases),
+            "eligible": len(candidates),
+            "deleted": 0,
+            "failed": 0,
+            "skipped": len(skipped),
+            "candidates": candidates,
+            "errors": [],
+        }
+
+    deleted = 0
+    errors: list[dict] = []
+    for item in candidates:
+        try:
+            delete_icloud_alias(account_id, item["anonymous_id"])
+            deleted += 1
+        except Exception as exc:
+            errors.append(
+                {
+                    "email": item["email"],
+                    "error": str(exc)[:300],
+                }
+            )
+    return {
+        "ok": not errors,
+        "dry_run": False,
+        "aliases": len(aliases),
+        "eligible": len(candidates),
+        "deleted": deleted,
+        "failed": len(errors),
+        "skipped": len(skipped),
+        "errors": errors,
+    }
+
+
+def _delete_alias_after_success(
+    *,
+    account_id: str,
+    email: str,
+    created_alias: Optional[dict] = None,
+) -> dict:
+    """Best-effort post-registration cleanup that never fails the registration."""
+    safe, reason = _alias_delete_eligibility(email)
+    if not safe:
+        return {"ok": False, "skipped": True, "reason": reason}
+    anonymous_id = str((created_alias or {}).get("anonymousId") or "").strip()
+    try:
+        if not anonymous_id:
+            aliases = list_icloud_aliases(account_id).get("aliases") or []
+            match = next(
+                (
+                    item
+                    for item in aliases
+                    if str(item.get("email") or "").strip().lower()
+                    == email.strip().lower()
+                ),
+                None,
+            )
+            anonymous_id = str((match or {}).get("anonymousId") or "").strip()
+        if not anonymous_id:
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "未找到别名 anonymousId",
+            }
+        delete_icloud_alias(account_id, anonymous_id)
+        return {"ok": True, "anonymous_id": anonymous_id}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": str(exc)[:300],
+        }
+
+
 def set_icloud_alias_active(account_id: str, anonymous_id: str, active: bool) -> dict:
     cfg = db.get_integration_internal_config()
     account_id = (account_id or cfg.get("icloud_account_id") or "").strip()
@@ -1315,6 +1451,53 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
         cycle_address_results=successes + failures,
         cycle_address_index=max(0, len(successes) + len(failures) - 1),
     )
+    alias_cleanup = None
+    all_cycle_accounts_succeeded = (
+        bool(plan)
+        and not failures
+        and len(successes) == len(plan)
+    )
+    if (
+        all_cycle_accounts_succeeded
+        and bool(cfg.get("delete_alias_after_registration", True))
+    ):
+        _set_job(
+            stage="cleaning_alias",
+            message=f"正在清理已完成的隐私邮箱：{base_email}",
+        )
+        alias_cleanup = _delete_alias_after_success(
+            account_id=account_id,
+            email=base_email,
+            created_alias=created,
+        )
+        if alias_cleanup.get("ok"):
+            _set_job(
+                alias_cleanup=alias_cleanup,
+                alias_deleted=True,
+                alias_deleted_at=time.time(),
+                alias_delete_error="",
+            )
+            _log(f"注册完成，隐私邮箱已删除：{base_email}")
+        else:
+            reason = (
+                alias_cleanup.get("reason")
+                or alias_cleanup.get("error")
+                or "未知原因"
+            )
+            _set_job(
+                alias_cleanup=alias_cleanup,
+                alias_deleted=False,
+                alias_delete_error=str(reason)[:300],
+            )
+            _log(f"隐私邮箱暂未删除：{base_email}；{reason}")
+    elif all_cycle_accounts_succeeded:
+        alias_cleanup = {
+            "ok": False,
+            "skipped": True,
+            "reason": "自动删除已关闭",
+        }
+        _set_job(alias_cleanup=alias_cleanup, alias_deleted=False)
+
     last_failure = failures[-1] if failures else {}
     return {
         "ok": bool(successes),
@@ -1326,6 +1509,7 @@ def _run_cycle(job_id: str, cfg: dict, *, resuming: bool = False) -> dict:
         "failures": failures,
         "success_count": len(successes),
         "failure_count": len(failures),
+        "alias_cleanup": alias_cleanup,
         "error": last_failure.get("error") or (
             "" if successes else "本轮没有成功注册的邮箱"
         ),
