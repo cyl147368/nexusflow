@@ -2236,6 +2236,12 @@ class AuthFlow:
                     or ""
                 )
 
+            try:
+                recovery_timeout = float(
+                    self._get_env("BROWSER_SESSION_RECOVERY_TIMEOUT", "180")
+                )
+            except Exception:
+                recovery_timeout = 180.0
             browser = BrowserFallback(
                 proxy=self.config.proxy,
                 user_agent=self._ua,
@@ -2243,7 +2249,7 @@ class AuthFlow:
                 timezone=str(self._fingerprint.get("timezone") or ""),
                 screen=str(self._fingerprint.get("screen") or ""),
                 browser_version=str(self._fingerprint.get("impersonate") or ""),
-                timeout=90.0,
+                timeout=max(60.0, min(recovery_timeout, 240.0)),
             )
             result = browser.bootstrap(
                 auth_url,

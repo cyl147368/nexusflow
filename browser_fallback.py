@@ -82,6 +82,8 @@ _RESEND_TEXTS = (
     "send a new code",
     "send new code",
     "resend",
+    "kirim ulang email",
+    "kirim ulang",
     "重新发送",
     "重新获取",
 )
