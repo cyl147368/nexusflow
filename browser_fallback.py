@@ -66,6 +66,16 @@ _CONTINUE_TEXTS = (
     "注册",
 )
 
+_RESEND_TEXTS = (
+    "resend email",
+    "resend code",
+    "send a new code",
+    "send new code",
+    "resend",
+    "重新发送",
+    "重新获取",
+)
+
 _CHROMIUM_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -171,6 +181,31 @@ def _click_continue(page: Any) -> bool:
         try:
             locator = page.get_by_role("button", name=text, exact=False).first
             if locator.is_visible(timeout=250) and locator.is_enabled(timeout=250):
+                locator.click(timeout=5000)
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _click_resend(page: Any) -> bool:
+    for selector in (
+        'button:has-text("Resend")',
+        'a:has-text("Resend")',
+        'button:has-text("重新发送")',
+        'a:has-text("重新发送")',
+    ):
+        try:
+            locator = page.locator(selector).first
+            if locator.is_visible(timeout=350) and locator.is_enabled(timeout=350):
+                locator.click(timeout=5000)
+                return True
+        except Exception:
+            continue
+    for text in _RESEND_TEXTS:
+        try:
+            locator = page.get_by_text(text, exact=False).first
+            if locator.is_visible(timeout=250):
                 locator.click(timeout=5000)
                 return True
         except Exception:
@@ -528,6 +563,7 @@ class BrowserFallback:
         email_submitted = False
         password_submitted = False
         otp_submitted = False
+        resend_clicked = False
         access_token = ""
 
         if seed_cookies:
@@ -614,7 +650,9 @@ class BrowserFallback:
             else:
                 continue
 
-            if capture_auth and email_submitted:
+            if capture_auth and (
+                email_submitted or password_submitted or otp_submitted
+            ):
                 access_token = _read_access_token(page)
                 current_url = str(getattr(page, "url", "") or "")
                 if access_token or (
@@ -633,6 +671,7 @@ class BrowserFallback:
                         if not _click_continue(page):
                             page.wait_for_timeout(500)
                         email_submitted = True
+                        logger.info("浏览器已提交邮箱，等待认证页")
                         page.wait_for_timeout(1800)
                         continue
                     except Exception as exc:
@@ -646,6 +685,7 @@ class BrowserFallback:
                         if not _click_continue(page):
                             page.keyboard.press("Enter")
                         password_submitted = True
+                        logger.info("浏览器已提交账号密码")
                         page.wait_for_timeout(1800)
                         continue
                     except Exception as exc:
@@ -655,6 +695,11 @@ class BrowserFallback:
             if otp_field is not None:
                 if otp_provider is not None and not otp_submitted:
                     try:
+                        if not resend_clicked:
+                            if _click_resend(page):
+                                logger.info("浏览器已请求重新发送验证码")
+                                page.wait_for_timeout(1200)
+                            resend_clicked = True
                         code = str(otp_provider() or "").strip()
                         if re.fullmatch(r"\d{4,8}", code):
                             otp_field.fill(code)
@@ -662,6 +707,7 @@ class BrowserFallback:
                             if not _click_continue(page):
                                 page.wait_for_timeout(500)
                             otp_submitted = True
+                            logger.info("浏览器已提交邮箱验证码")
                             page.wait_for_timeout(1800)
                             continue
                     except Exception as exc:
