@@ -280,6 +280,20 @@ def _read_access_token(page: Any) -> str:
     return str(payload.get("accessToken") or "").strip()
 
 
+def _loading_callback_url(page: Any) -> str:
+    """Extract the callback shown in OpenAI's temporary “Loading URL” title."""
+    try:
+        title = str(page.title() or "")
+    except Exception:
+        return ""
+    match = re.search(
+        r"https://chatgpt\.com/api/auth/callback/openai\?[^\s]+",
+        title,
+        flags=re.I,
+    )
+    return match.group(0).rstrip("'\"") if match else ""
+
+
 class BrowserFallback:
     def __init__(
         self,
@@ -674,6 +688,21 @@ class BrowserFallback:
                 challenge_passed = True
             else:
                 continue
+
+            if capture_auth:
+                loading_callback = _loading_callback_url(page)
+                if loading_callback:
+                    logger.info("浏览器检测到延迟 callback，正在显式完成 NextAuth")
+                    try:
+                        page.goto(
+                            loading_callback,
+                            wait_until="domcontentloaded",
+                            timeout=45000,
+                        )
+                        page.wait_for_timeout(1800)
+                        continue
+                    except Exception as exc:
+                        logger.debug("浏览器完成延迟 callback 失败: %s", exc)
 
             if capture_auth and (
                 email_submitted or password_submitted or otp_submitted
