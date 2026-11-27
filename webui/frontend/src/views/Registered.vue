@@ -55,6 +55,7 @@ const plusSchedule = ref({
 const scheduleSaving = ref(false)
 const scheduleStarting = ref(false)
 let scheduleTimer = null
+let loadSequence = 0
 
 const PLUS_TYPE = {
   plus_eligible: 'success', plus_active: 'primary', free: 'warning',
@@ -108,6 +109,7 @@ function credentialSourceLabel(row) {
 }
 
 async function load(resetPage) {
+  const sequence = ++loadSequence
   if (resetPage) page.value = 1
   loading.value = true
   try {
@@ -129,14 +131,24 @@ async function load(resetPage) {
       }
     }
     const { items, total: t } = response
+    if (sequence !== loadSequence) return
     rows.value = items
     total.value = t
-    await Promise.all([loadPlusTotal(), loadTeamTotal()])
-  } catch (e) { ElMessage.error(e.message) }
-  finally { loading.value = false }
+    // The table is ready as soon as the page request finishes. Summary tags
+    // must not keep the loading mask over the results.
+    loading.value = false
+    void Promise.allSettled([
+      loadPlusTotal(sequence),
+      loadTeamTotal(sequence),
+    ])
+  } catch (e) {
+    if (sequence === loadSequence) ElMessage.error(e.message)
+  } finally {
+    if (sequence === loadSequence) loading.value = false
+  }
 }
 
-async function loadPlusTotal() {
+async function loadPlusTotal(sequence = loadSequence) {
   try {
     const result = await listRegistered({
       limit: 1,
@@ -144,13 +156,14 @@ async function loadPlusTotal() {
       filter: 'plus',
       workflow_scope: workflowFilter.value,
     })
+    if (sequence !== loadSequence) return
     currentPlusTotal.value = Number(result.total || 0)
   } catch (_) {
     currentPlusTotal.value = null
   }
 }
 
-async function loadTeamTotal() {
+async function loadTeamTotal(sequence = loadSequence) {
   try {
     const result = await listRegistered({
       limit: 1,
@@ -158,6 +171,7 @@ async function loadTeamTotal() {
       filter: 'team_eligible',
       workflow_scope: workflowFilter.value,
     })
+    if (sequence !== loadSequence) return
     currentTeamTotal.value = Number(result.total || 0)
   } catch (_) {
     currentTeamTotal.value = null
@@ -606,7 +620,6 @@ async function saveEdit() {
   } finally { editSaving.value = false }
 }
 
-watch(page, () => load())
 watch(dataVersion, () => load())
 onActivated(() => {
   load()
@@ -855,6 +868,7 @@ onDeactivated(() => {
         <el-pagination
           v-model:current-page="page" :page-size="PAGE_SIZE" :total="total"
           layout="prev, pager, next, total" background
+          @current-change="() => load(false)"
         />
       </div>
 
