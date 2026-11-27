@@ -299,6 +299,8 @@ async function setupAccount() {
     await save({ quiet: true })
     await refreshAccounts()
     activeStep.value = 2
+    accountForm.value.password = ''
+    accountForm.value.otp_code = ''
     ElMessage.success(`iCloud 账号已就绪：${r.account_id}`)
   } catch (e) {
     ElMessage.error(e.message)
