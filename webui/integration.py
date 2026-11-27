@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Any, Optional
 
 from . import db, registrar
 
@@ -125,6 +125,21 @@ def _request_json(
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:500]
+        trust_tokens_empty = bool(re.search(
+            r'trustTokens\\?"\s*:\s*\[\s*\]',
+            detail,
+            flags=re.IGNORECASE,
+        ))
+        if "icloud-prime" in url and (
+            exc.code == 421
+            or (exc.code == 502 and trust_tokens_empty)
+        ):
+            raise IntegrationError(
+                "iCloud Cookie 已失效或被 Apple 判定不受信任"
+                "（HTTP 421，trustTokens 为空）。"
+                "请在「添加 / 修复 iCloud 账号」中重新粘贴有效 Cookie；"
+                "或填写 iCloud 密码和当前 6 位双重认证验证码。"
+            ) from exc
         raise IntegrationError(f"{method} {url} -> HTTP {exc.code}: {detail}") from exc
     except Exception as exc:
         raise IntegrationError(f"{method} {url} 连接失败: {exc}") from exc
@@ -134,11 +149,11 @@ def _request_json(
         raise IntegrationError(f"{url} 返回了非 JSON 内容: {raw[:200]}") from exc
 
 
-def _data(response: dict) -> dict:
+def _data(response: dict) -> Any:
     if response.get("success") is False:
         raise IntegrationError(response.get("message") or "上游服务返回失败")
     data = response.get("data")
-    return data if isinstance(data, dict) else response
+    return data if data is not None else response
 
 
 def test_mailhub(cfg: Optional[dict] = None) -> dict:

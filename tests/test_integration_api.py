@@ -787,6 +787,49 @@ class IntegrationApiTest(unittest.TestCase):
         ))
         self.assertFalse(integration._is_quota_wait_error("warmup failed"))
 
+    def test_icloud_empty_trust_tokens_error_is_actionable(self):
+        import io
+        import urllib.error
+
+        from webui import integration
+
+        body = (
+            '{"success":false,"message":"HTTP 421: '
+            '{\\"success\\":false,\\"trustTokens\\":[]}"}'
+        ).encode("utf-8")
+        error = urllib.error.HTTPError(
+            "http://icloud-prime:8081/api/aliases",
+            502,
+            "Bad Gateway",
+            {},
+            io.BytesIO(body),
+        )
+        with patch.object(
+            integration.urllib.request,
+            "urlopen",
+            side_effect=error,
+        ):
+            with self.assertRaises(integration.IntegrationError) as raised:
+                integration._request_json(
+                    "GET",
+                    "http://icloud-prime:8081/api/aliases",
+                )
+
+        self.assertIn("Cookie 已失效", str(raised.exception))
+        self.assertIn("trustTokens 为空", str(raised.exception))
+        self.assertIn("重新粘贴有效 Cookie", str(raised.exception))
+
+    def test_integration_data_accepts_list_payloads(self):
+        from webui import integration
+
+        self.assertEqual(
+            integration._data({
+                "success": True,
+                "data": [{"id": "acc-1"}],
+            }),
+            [{"id": "acc-1"}],
+        )
+
     def test_workflow_pools_and_results_are_isolated(self):
         from webui import db
 
