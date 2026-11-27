@@ -1356,10 +1356,39 @@ def _refresh_access_token_for_retry(
         error = "AT 刷新返回成功，但数据库中没有新 AT"
         log.warning(f"[{tag}] {email} {error}")
         return None, error
+    access_token = str(cred.get("access_token") or "").strip()
+    recovery_method = "Session Token"
+    validation = token_refresh.validate_access_token(
+        access_token,
+        proxy.strip() or None,
+    )
+    if not validation.get("ok"):
+        log.warning(
+            "[%s] %s Session Token 新 AT 仍不可用 (HTTP %s)，改走密码重新登录",
+            tag,
+            email,
+            validation.get("status"),
+        )
+        relogin = token_refresh.relogin_registered_account(
+            email,
+            proxy,
+        )
+        if not relogin.get("ok"):
+            error = str(
+                relogin.get("error")
+                or "Session Token 新 AT 仍失效，密码重新登录失败"
+            )
+            log.warning(f"[{tag}] {email} 自动修复失败: {error[:180]}")
+            return None, error
+        cred = db.get_registered(email)
+        if not cred or not str(cred.get("access_token") or "").strip():
+            return None, "密码重新登录后数据库中没有新 AT"
+        recovery_method = "密码重新登录"
     log.info(
-        "[%s] %s 遇到 token_revoked，已用 Session Token 刷新 AT",
+        "[%s] %s 遇到 token_revoked，已用%s恢复 AT",
         tag,
         email,
+        recovery_method,
     )
     return cred, ""
 

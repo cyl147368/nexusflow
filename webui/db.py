@@ -973,6 +973,10 @@ def update_registered_tokens(
     refreshed_at: Optional[float] = None,
     method: str = "",
     expires=None,
+    device_id: str = "",
+    cookie_header: str = "",
+    id_token: str = "",
+    csrf_token: str = "",
 ) -> bool:
     """Update refreshed tokens without overwriting unrelated credentials."""
     email = str(email or "").strip().lower()
@@ -1015,6 +1019,15 @@ def update_registered_tokens(
         if refresh_token:
             fields.append("refresh_token=?")
             values.append(str(refresh_token).strip())
+        for column, value in (
+            ("device_id", device_id),
+            ("cookie_header", cookie_header),
+            ("id_token", id_token),
+            ("csrf_token", csrf_token),
+        ):
+            if value:
+                fields.append(f"{column}=?")
+                values.append(str(value).strip())
         values.append(email)
         rc = con.execute(
             f"UPDATE registered SET {', '.join(fields)} WHERE email=?",

@@ -13,9 +13,17 @@ from . import db
 logger = logging.getLogger("webui.token_refresh")
 
 SESSION_URL = "https://chatgpt.com/api/auth/session"
+ACCOUNTS_CHECK_URL = (
+    "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27"
+)
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/145.0.0.0 Safari/537.36"
+)
 
 
 def _refresh_with_session_token(
@@ -127,6 +135,176 @@ def _refresh_with_oauth_token(
             session.close()
         except Exception:
             pass
+
+
+def validate_access_token(
+    access_token: str,
+    proxy: Optional[str] = None,
+) -> dict:
+    """Check whether OpenAI still accepts an Access Token."""
+    token = str(access_token or "").strip()
+    if not token:
+        return {"ok": False, "status": 0, "error": "缺少 Access Token"}
+    session = create_http_session(proxy=proxy, impersonate="chrome110")
+    try:
+        response = session.get(
+            ACCOUNTS_CHECK_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+                "Origin": "https://chatgpt.com",
+                "Referer": "https://chatgpt.com/",
+            },
+            timeout=20,
+        )
+        body = (response.text or "").strip()
+        return {
+            "ok": response.status_code == 200,
+            "status": response.status_code,
+            "body": body[:300],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "status": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
+
+
+def relogin_registered_account(email: str, proxy: str = "") -> dict:
+    """Rebuild a login session with the saved password.
+
+    Session Token refresh can occasionally mint an Access Token that OpenAI
+    revokes again on first use. A real password login creates a fresh browser
+    session without changing the account password or TOTP secret.
+    """
+    from auth_flow import AuthFlow
+    from config import Config
+    from mail_providers import create_mail_provider
+
+    email = str(email or "").strip().lower()
+    cred = db.get_registered(email)
+    if not cred:
+        return {
+            "ok": False,
+            "email": email,
+            "status": "not_found",
+            "error": "账号不存在",
+        }
+    password = str(cred.get("password") or "").strip()
+    if not password:
+        return {
+            "ok": False,
+            "email": email,
+            "status": "missing_password",
+            "error": "账号没有保存密码，无法重新登录",
+        }
+
+    account = db.get_account(email) or {}
+    relay_url = str(account.get("relay_url") or "").strip()
+    if not relay_url:
+        return {
+            "ok": False,
+            "email": email,
+            "status": "missing_relay_url",
+            "error": "账号没有取件链接，无法处理登录验证码",
+        }
+    provider_account = dict(account)
+    provider_account.update({
+        "email": email,
+        "kind": "icloud_relay",
+        "relay_url": relay_url,
+    })
+    mail = create_mail_provider(
+        "icloud_relay",
+        db.get_mail_settings(),
+        provider_account,
+    )
+
+    proxy_value = str(proxy or "").strip() or None
+    cfg = Config()
+    cfg.proxy = proxy_value
+    flow = AuthFlow(
+        cfg,
+        env_overrides={
+            "WEBUI_ALLOW_LOGIN": "1",
+            "OTP_MAX_DELIVERIES": "0",
+            "OTP_TIMEOUT": "30",
+            "SKIP_OAUTH_TOKEN_EXCHANGE": "1",
+            "OAUTH_CODEX_RT_EXCHANGE": "0",
+            "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
+        },
+        account_callback=lambda _email: {
+            "password": password,
+            "totp_secret": cred.get("totp_secret") or "",
+        },
+    )
+    try:
+        login_result = flow.run_protocol_login(
+            mail,
+            email,
+            password=password,
+            force_email_otp=False,
+        )
+        data = login_result.to_dict()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[relogin] %s 重新登录失败: %s", email, exc)
+        return {
+            "ok": False,
+            "email": email,
+            "status": "relogin_failed",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    access_token = str(data.get("access_token") or "").strip()
+    if not access_token:
+        return {
+            "ok": False,
+            "email": email,
+            "status": "missing_access_token",
+            "error": "重新登录完成但没有拿到 Access Token",
+        }
+    refreshed_at = time.time()
+    db.update_registered_tokens(
+        email,
+        access_token=access_token,
+        session_token=str(data.get("session_token") or ""),
+        refresh_token=str(data.get("refresh_token") or ""),
+        refreshed_at=refreshed_at,
+        method="password_relogin",
+        expires=data.get("expires") or "",
+        device_id=str(data.get("device_id") or ""),
+        cookie_header=str(data.get("cookie_header") or ""),
+        id_token=str(data.get("id_token") or ""),
+        csrf_token=str(data.get("csrf_token") or ""),
+    )
+    validation = validate_access_token(access_token, proxy_value)
+    if not validation.get("ok"):
+        return {
+            "ok": False,
+            "email": email,
+            "status": "relogin_token_unusable",
+            "error": (
+                "重新登录后 Access Token 仍不可用: "
+                f"HTTP {validation.get('status')}"
+            ),
+            "body": validation.get("body") or validation.get("error") or "",
+        }
+    logger.info("[relogin] %s 重新登录成功并验证 AT", email)
+    return {
+        "ok": True,
+        "email": email,
+        "status": "success",
+        "method": "password_relogin",
+        "at_len": len(access_token),
+        "refreshed_at": refreshed_at,
+    }
 
 
 def refresh_registered_access_token(email: str, proxy: str = "") -> dict:

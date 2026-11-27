@@ -1310,6 +1310,10 @@ class IntegrationApiTest(unittest.TestCase):
                 "webui.token_refresh.refresh_registered_access_token",
                 side_effect=refresh,
             ),
+            patch(
+                "webui.token_refresh.validate_access_token",
+                return_value={"ok": True, "status": 200},
+            ),
         ):
             response = self.client.post(
                 "/api/registered/check_plus_fast",
@@ -1329,6 +1333,52 @@ class IntegrationApiTest(unittest.TestCase):
             "plus_eligible",
         )
         self.assertNotIn("team_promo_check", saved["extra"])
+
+    def test_revoked_refresh_token_falls_back_to_password_relogin(self):
+        import logging
+
+        from webui.app import _refresh_access_token_for_retry
+
+        with (
+            patch(
+                "webui.token_refresh.refresh_registered_access_token",
+                return_value={
+                    "ok": True,
+                    "email": "relogin-fallback@example.com",
+                },
+            ),
+            patch(
+                "webui.token_refresh.validate_access_token",
+                return_value={"ok": False, "status": 401},
+            ),
+            patch(
+                "webui.token_refresh.relogin_registered_account",
+                return_value={"ok": True, "method": "password_relogin"},
+            ) as relogin,
+            patch(
+                "webui.db.get_registered",
+                side_effect=[
+                    {
+                        "email": "relogin-fallback@example.com",
+                        "access_token": "revoked-fresh-at",
+                    },
+                    {
+                        "email": "relogin-fallback@example.com",
+                        "access_token": "relogin-at",
+                    },
+                ],
+            ),
+        ):
+            cred, error = _refresh_access_token_for_retry(
+                "relogin-fallback@example.com",
+                "",
+                logging.getLogger("test"),
+                "test",
+            )
+
+        self.assertEqual(error, "")
+        self.assertEqual(cred["access_token"], "relogin-at")
+        relogin.assert_called_once_with("relogin-fallback@example.com", "")
 
     def test_check_plus_refreshes_revoked_at_and_retries(self):
         from webui import db
@@ -1405,6 +1455,10 @@ class IntegrationApiTest(unittest.TestCase):
             patch(
                 "webui.token_refresh.refresh_registered_access_token",
                 side_effect=refresh,
+            ),
+            patch(
+                "webui.token_refresh.validate_access_token",
+                return_value={"ok": True, "status": 200},
             ),
         ):
             response = self.client.post(
@@ -1503,6 +1557,10 @@ class IntegrationApiTest(unittest.TestCase):
             patch(
                 "webui.token_refresh.refresh_registered_access_token",
                 side_effect=refresh,
+            ),
+            patch(
+                "webui.token_refresh.validate_access_token",
+                return_value={"ok": True, "status": 200},
             ),
         ):
             response = self.client.post(
