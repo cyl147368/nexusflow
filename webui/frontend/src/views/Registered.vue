@@ -251,9 +251,9 @@ async function doCheck(mode) {
       ElMessage.info(mode === 'unchecked' ? '当前流程没有未检测账号' : '当前页没有可检测的号')
       return
     }
-    // Keep every request below the API's 60s timeout. The backend checks one
-    // account at a time, so sending hundreds in one request can look like a 502.
-    const batchSize = 20
+    // A revoked account may need a full password re-login. Keep requests small
+    // so the active batch has time to finish without turning into a false 502.
+    const batchSize = 5
     const merged = {}
     let note = ''
     for (let start = 0; start < emails.length; start += batchSize) {
@@ -303,7 +303,8 @@ async function doTeamCheck(mode) {
       ElMessage.info(mode === 'unchecked' ? '当前流程没有未检测 Team 的账号' : '当前没有可检测的号')
       return
     }
-    const batchSize = 20
+    // Team checks can also trigger the one-time account recovery path.
+    const batchSize = 5
     const merged = {}
     let note = ''
     for (let start = 0; start < emails.length; start += batchSize) {

@@ -56,10 +56,18 @@ export const listExportFormats = () => http.get('/api/registered/export/formats'
 export const exportRegistered = (payload) => http.post('/api/registered/export', payload)
 
 export const checkPlus = (emails, proxy = '') =>
-  http.post('/api/registered/check_plus_fast', { emails, proxy })
+  http.post(
+    '/api/registered/check_plus_fast',
+    { emails, proxy },
+    { timeout: 600000 },
+  )
 
 export const checkTeamPromo = (emails) =>
-  http.post('/api/registered/check_team_promo_fast', { emails })
+  http.post(
+    '/api/registered/check_team_promo_fast',
+    { emails },
+    { timeout: 600000 },
+  )
 
 export const getPlusSchedule = () =>
   http.get('/api/plus/schedule')
