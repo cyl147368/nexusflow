@@ -1810,6 +1810,47 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertIn("good@example.com", body["results"])
         self.assertIn("bad@example.com", body["results"])
 
+    def test_export_all_respects_current_registered_filter(self):
+        from webui import db
+
+        db.save_registered({
+            "email": "plus-integration@example.com",
+            "workflow_scope": "integration",
+            "access_token": "access-plus",
+            "plus_check": {"status": "plus_eligible"},
+        })
+        db.save_registered({
+            "email": "free-integration@example.com",
+            "workflow_scope": "integration",
+            "access_token": "access-free",
+            "plus_check": {"status": "free"},
+        })
+        db.save_registered({
+            "email": "plus-legacy@example.com",
+            "workflow_scope": "legacy",
+            "access_token": "access-legacy",
+            "plus_check": {"status": "plus_eligible"},
+        })
+
+        response = self.client.post(
+            "/api/registered/export",
+            json={
+                "format": "at",
+                "all": True,
+                "workflow_scope": "integration",
+                "filter": "plus",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(
+            body["emails"],
+            ["plus-integration@example.com"],
+        )
+        self.assertEqual(body["text"], "access-plus")
+
     def test_backfill_marks_persisted_integration_aliases(self):
         from webui import db
 

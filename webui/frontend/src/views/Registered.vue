@@ -26,10 +26,15 @@ const runtime = useRuntimeStore()
 // store 实例上取 —— storeToRefs 只转 state/getter，把 action 解构出来会丢 this。
 const { dataVersion } = storeToRefs(runtime)
 
-const PAGE_SIZE = 20
+const DEFAULT_PAGE_SIZE = 20
+const PAGE_SIZES = [20, 50, 100, 200]
+const savedPageSize = Number(localStorage.getItem('registeredPageSize'))
 const rows = ref([])
 const total = ref(0)
 const page = ref(1)
+const pageSize = ref(
+  PAGE_SIZES.includes(savedPageSize) ? savedPageSize : DEFAULT_PAGE_SIZE,
+)
 const filter = ref('successful')
 const workflowFilter = ref('integration')
 const selected = ref([])
@@ -156,8 +161,8 @@ async function load(resetPage) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         response = await listRegistered({
-          limit: PAGE_SIZE,
-          offset: (page.value - 1) * PAGE_SIZE,
+          limit: pageSize.value,
+          offset: (page.value - 1) * pageSize.value,
           filter: filter.value,
           workflow_scope: workflowFilter.value,
         })
@@ -510,7 +515,9 @@ const exportedEmails = ref([])
 const deletingExported = ref(false)
 
 const exportBtnText = computed(() =>
-  selected.value.length ? `导出选中 (${selected.value.length})` : '导出全部',
+  selected.value.length
+    ? `导出选中 (${selected.value.length})`
+    : `导出当前筛选 (${total.value})`,
 )
 
 async function loadExportFormats() {
@@ -526,7 +533,12 @@ async function doExport(fmt) {
   // 没勾选 = 导出全部（跨页，不只当前页）
   const payload = emails.length
     ? { format: fmt.id, emails }
-    : { format: fmt.id, all: true, workflow_scope: workflowFilter.value }
+    : {
+        format: fmt.id,
+        all: true,
+        workflow_scope: workflowFilter.value,
+        filter: filter.value,
+      }
   exporting.value = true
   try {
     const r = await exportRegistered(payload)
@@ -544,6 +556,13 @@ async function doExport(fmt) {
     exportVisible.value = true
   } catch (e) { ElMessage.error('导出失败: ' + e.message) }
   finally { exporting.value = false }
+}
+
+function handlePageSizeChange(size) {
+  pageSize.value = size
+  localStorage.setItem('registeredPageSize', String(size))
+  page.value = 1
+  load(false)
 }
 
 function b64ToBytes(b64) {
@@ -1004,9 +1023,13 @@ onDeactivated(() => {
       </el-table>
       <div style="display: flex; justify-content: center; margin-top: 14px">
         <el-pagination
-          v-model:current-page="page" :page-size="PAGE_SIZE" :total="total"
-          layout="prev, pager, next, total" background
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          :page-sizes="PAGE_SIZES"
+          :total="total"
+          layout="total, sizes, prev, pager, next, jumper" background
           @current-change="() => load(false)"
+          @size-change="handlePageSizeChange"
         />
       </div>
 

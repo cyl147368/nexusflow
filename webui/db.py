@@ -1164,6 +1164,7 @@ def list_registered(
 def list_registered_full(
     limit: int = 5000,
     workflow_scope: str = "",
+    filter_rt: str = "all",
 ) -> list[dict]:
     """返回完整凭证（用于批量导出）。每行同 get_registered 的格式，外加 relay_url。
 
@@ -1174,8 +1175,46 @@ def list_registered_full(
        （只要号池那行还在）；号池行被删掉就是空串，照约定留空、分隔符保留。
     """
     scope = (workflow_scope or "").strip().lower()
-    where = " WHERE r.workflow_scope=?" if scope else ""
-    args = (scope, limit) if scope else (limit,)
+    clauses = []
+    args: list = []
+    if scope in {"legacy", "integration"}:
+        clauses.append("r.workflow_scope=?")
+        args.append(scope)
+    filter_name = (filter_rt or "all").strip().lower()
+    filters = {
+        "successful": (
+            "(length(r.access_token) > 0 "
+            "OR length(r.session_token) > 0 "
+            "OR length(r.refresh_token) > 0)"
+        ),
+        "has_rt": "length(r.refresh_token) > 0",
+        "no_rt": "coalesce(length(r.refresh_token),0) = 0",
+        "unchecked": (
+            "(r.extra_json IS NULL "
+            "OR r.extra_json NOT LIKE '%\"plus_check\"%')"
+        ),
+        "free": "r.extra_json LIKE '%\"free\"%'",
+        "plus": (
+            "(r.extra_json LIKE '%\"plus_eligible\"%' "
+            "OR r.extra_json LIKE '%\"plus_active\"%')"
+        ),
+        "not_plus": (
+            "(r.extra_json IS NULL OR ("
+            "r.extra_json NOT LIKE '%\"plus_eligible\"%' AND "
+            "r.extra_json NOT LIKE '%\"plus_active\"%'))"
+        ),
+        "banned": "r.extra_json LIKE '%\"banned\"%'",
+        "token_invalid": "r.extra_json LIKE '%\"token_invalid\"%'",
+        "team_eligible": "r.extra_json LIKE '%\"team_eligible\"%'",
+        "team_unchecked": (
+            "(r.extra_json IS NULL "
+            "OR r.extra_json NOT LIKE '%\"team_promo_check\"%')"
+        ),
+    }
+    if filter_name in filters:
+        clauses.append(filters[filter_name])
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    args.append(limit)
     with closing(_conn()) as con:
         cur = con.execute(
             "SELECT r.*, a.relay_url AS relay_url "

@@ -855,8 +855,9 @@ def api_export_formats():
 class ExportRegisteredReq(BaseModel):
     format: str = Field(..., description="格式 id，见 GET /api/registered/export/formats")
     emails: Optional[list[str]] = Field(None, description="要导出的 email 列表")
-    all: bool = Field(False, description="true = 导出全部（跨页），忽略 emails")
+    all: bool = Field(False, description="true = 导出当前筛选（跨页），忽略 emails")
     workflow_scope: str = ""
+    filter: str = Field("all", description="导出全部时使用的注册结果筛选器")
 
 
 @app.post("/api/registered/export")
@@ -870,6 +871,7 @@ def api_export_registered(req: ExportRegisteredReq):
         rows = db.list_registered_full(
             limit=100000,
             workflow_scope=scope,
+            filter_rt=req.filter,
         )
     elif req.emails:
         rows = db.list_registered_by_emails(req.emails)
