@@ -367,6 +367,10 @@ class PlusScheduler:
                         exc,
                     )
                 counts["batches"] += 1
+                db.set_setting(
+                    "plus_schedule_last_counts",
+                    json.dumps(counts, ensure_ascii=False),
+                )
                 if consecutive_batch_errors >= 3:
                     raise RuntimeError(
                         "连续三个 Plus 检测批次失败，已中止并准备退避重试"

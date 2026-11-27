@@ -332,6 +332,10 @@ class TeamScheduler:
                     last_batch_note = f"{type(exc).__name__}: {exc}"
                     logger.warning("[team-scheduler] batch failed: %s", exc)
                 counts["batches"] += 1
+                db.set_setting(
+                    "team_schedule_last_counts",
+                    json.dumps(counts, ensure_ascii=False),
+                )
                 if consecutive_batch_errors >= 3:
                     raise RuntimeError(
                         "连续三个 Team 检测批次失败，已中止并准备退避重试"
