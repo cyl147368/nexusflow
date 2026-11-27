@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 from . import db, export_formats, integration, payment_detector, registrar, system_update  # noqa: E402
 from .auto_loop import CONTROLLER as AUTO_LOOP  # noqa: E402
 from .plus_scheduler import CONTROLLER as PLUS_SCHEDULER  # noqa: E402
+from .team_scheduler import CONTROLLER as TEAM_SCHEDULER  # noqa: E402
 from .exporter import _decode_jwt_payload, _get_auth  # noqa: E402
 from mail_providers import (  # noqa: E402
     ImportValidationError,
@@ -89,6 +90,14 @@ def resume_integration_job():
             CheckPlusReq(
                 emails=emails,
                 proxy=proxy,
+                workers=workers,
+            )
+        )
+    )
+    TEAM_SCHEDULER.start(
+        lambda emails, workers: api_check_team_promo_fast(
+            CheckTeamPromoReq(
+                emails=emails,
                 workers=workers,
             )
         )
@@ -1252,6 +1261,14 @@ class PlusScheduleReq(BaseModel):
     workers: Optional[int] = Field(None, ge=1, le=6)
 
 
+class TeamScheduleReq(BaseModel):
+    enabled: Optional[bool] = None
+    interval_hours: Optional[float] = Field(None, ge=0.25, le=168)
+    scope: Optional[str] = None
+    batch_size: Optional[int] = Field(None, ge=1, le=100)
+    workers: Optional[int] = Field(None, ge=1, le=6)
+
+
 class RefreshAccessTokensReq(BaseModel):
     emails: list[str] = Field(..., description="要刷新 AT 的邮箱列表")
     proxy: str = Field("", description="刷新代理，留空直连")
@@ -2409,6 +2426,30 @@ def api_plus_schedule_run():
     result = PLUS_SCHEDULER.run_now()
     if not result.get("ok"):
         raise HTTPException(409, result.get("message") or result.get("error") or "启动失败")
+    return result
+
+
+@app.get("/api/team/schedule")
+def api_team_schedule_status():
+    return {"ok": True, "schedule": TEAM_SCHEDULER.status()}
+
+
+@app.put("/api/team/schedule")
+def api_team_schedule_update(req: TeamScheduleReq):
+    from .team_scheduler import save_schedule_config
+
+    save_schedule_config(req.model_dump(exclude_none=True))
+    return {"ok": True, "schedule": TEAM_SCHEDULER.status()}
+
+
+@app.post("/api/team/schedule/run")
+def api_team_schedule_run():
+    result = TEAM_SCHEDULER.run_now()
+    if not result.get("ok"):
+        raise HTTPException(
+            409,
+            result.get("message") or result.get("error") or "启动失败",
+        )
     return result
 
 

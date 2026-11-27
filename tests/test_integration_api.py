@@ -70,6 +70,30 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(saved["workers"], 2)
         self.assertEqual(saved["batch_size"], 30)
 
+    def test_team_schedule_defaults_and_updates(self):
+        response = self.client.get("/api/team/schedule")
+        self.assertEqual(response.status_code, 200)
+        schedule = response.json()["schedule"]
+        self.assertTrue(schedule["enabled"])
+        self.assertEqual(schedule["interval_hours"], 3)
+        self.assertEqual(schedule["scope"], "all")
+
+        update = self.client.put(
+            "/api/team/schedule",
+            json={
+                "interval_hours": 2,
+                "scope": "all",
+                "workers": 2,
+                "batch_size": 10,
+            },
+        )
+        self.assertEqual(update.status_code, 200)
+        saved = update.json()["schedule"]
+        self.assertEqual(saved["interval_hours"], 2)
+        self.assertEqual(saved["scope"], "all")
+        self.assertEqual(saved["workers"], 2)
+        self.assertEqual(saved["batch_size"], 10)
+
     def test_config_can_be_saved_without_overwriting_secrets(self):
         response = self.client.post(
             "/api/integration/config",

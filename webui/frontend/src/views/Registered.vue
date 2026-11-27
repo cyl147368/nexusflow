@@ -8,6 +8,7 @@ import {
   bulkDeleteRegistered, bulkDeleteAccounts, checkPlus, checkTeamPromo, refreshAccessTokens,
   listExportFormats, exportRegistered, updateCredentials,
   getPlusSchedule, updatePlusSchedule, runPlusScheduleNow as runPlusScheduleNowApi,
+  getTeamSchedule, updateTeamSchedule, runTeamScheduleNow as runTeamScheduleNowApi,
 } from '@/api/register'
 import { copyText, fmtTime } from '@/api/request'
 import { useFormStore } from '@/stores/form'
@@ -43,8 +44,19 @@ const currentTeamTotal = ref(null)
 const plusSchedule = ref({
   enabled: true,
   interval_hours: 3,
-  scope: 'integration',
+  scope: 'all',
   egress_mode: 'direct',
+  batch_size: 25,
+  workers: 3,
+  running: false,
+  last_status: 'idle',
+  last_counts: {},
+  next_run_at: 0,
+})
+const teamSchedule = ref({
+  enabled: true,
+  interval_hours: 3,
+  scope: 'integration',
   batch_size: 25,
   workers: 3,
   running: false,
@@ -54,6 +66,8 @@ const plusSchedule = ref({
 })
 const scheduleSaving = ref(false)
 const scheduleStarting = ref(false)
+const teamScheduleSaving = ref(false)
+const teamScheduleStarting = ref(false)
 let scheduleTimer = null
 let loadSequence = 0
 
@@ -102,6 +116,31 @@ const plusScheduleStatusText = computed(() => {
     idle: '等待首次运行',
   }[plusSchedule.value.last_status] || plusSchedule.value.last_status || '等待首次运行'
 })
+const teamScheduleStatusText = computed(() => {
+  if (teamSchedule.value.running) return '检测中'
+  return {
+    ok: '上次完成',
+    failed: '上次失败',
+    running: '检测中',
+    idle: '等待首次运行',
+  }[teamSchedule.value.last_status] || teamSchedule.value.last_status || '等待首次运行'
+})
+function scheduleScopeLabel(scope) {
+  return {
+    integration: '一体化流程',
+    legacy: '原有流程',
+    all: '全流程',
+  }[scope] || '全流程'
+}
+const plusScheduleScopeText = computed(
+  () => scheduleScopeLabel(plusSchedule.value.scope),
+)
+const teamScheduleScopeText = computed(
+  () => scheduleScopeLabel(teamSchedule.value.scope),
+)
+const currentScopeText = computed(
+  () => workflowFilter.value ? scheduleScopeLabel(workflowFilter.value) : '全流程',
+)
 function credentialSourceLabel(row) {
   return row.credential_source_label || (
     row.credential_source === 'recovery' ? '邮箱验证码找回' : '自动注册'
@@ -187,6 +226,15 @@ async function loadPlusSchedule() {
   }
 }
 
+async function loadTeamSchedule() {
+  try {
+    const result = await getTeamSchedule()
+    teamSchedule.value = { ...teamSchedule.value, ...(result.schedule || {}) }
+  } catch (_) {
+    // Keep manual Team checks available while the scheduler API reconnects.
+  }
+}
+
 async function savePlusSchedule() {
   scheduleSaving.value = true
   try {
@@ -207,6 +255,32 @@ async function savePlusSchedule() {
   }
 }
 
+async function saveTeamSchedule() {
+  teamScheduleSaving.value = true
+  try {
+    const result = await updateTeamSchedule({
+      enabled: teamSchedule.value.enabled,
+      interval_hours: teamSchedule.value.interval_hours,
+      scope: teamSchedule.value.scope,
+      batch_size: teamSchedule.value.batch_size,
+      workers: teamSchedule.value.workers,
+    })
+    teamSchedule.value = {
+      ...teamSchedule.value,
+      ...(result.schedule || {}),
+    }
+    ElMessage.success(
+      teamSchedule.value.enabled
+        ? '定时 Team 全量检测已保存'
+        : '定时 Team 检测已关闭',
+    )
+  } catch (e) {
+    ElMessage.error('保存 Team 定时检测失败: ' + e.message)
+  } finally {
+    teamScheduleSaving.value = false
+  }
+}
+
 async function runPlusScheduleNow() {
   scheduleStarting.value = true
   try {
@@ -217,6 +291,21 @@ async function runPlusScheduleNow() {
     ElMessage.error('启动检测失败: ' + (e.response?.data?.detail || e.message))
   } finally {
     scheduleStarting.value = false
+  }
+}
+
+async function runTeamScheduleNow() {
+  teamScheduleStarting.value = true
+  try {
+    const result = await runTeamScheduleNowApi()
+    ElMessage.success(result.message || 'Team 全量检测已启动')
+    await loadTeamSchedule()
+  } catch (e) {
+    ElMessage.error(
+      '启动 Team 检测失败: ' + (e.response?.data?.detail || e.message),
+    )
+  } finally {
+    teamScheduleStarting.value = false
   }
 }
 
@@ -625,8 +714,12 @@ watch(dataVersion, () => load())
 onActivated(() => {
   load()
   loadPlusSchedule()
+  loadTeamSchedule()
   if (scheduleTimer) clearInterval(scheduleTimer)
-  scheduleTimer = setInterval(loadPlusSchedule, 5000)
+  scheduleTimer = setInterval(() => {
+    loadPlusSchedule()
+    loadTeamSchedule()
+  }, 5000)
 })
 onDeactivated(() => {
   if (scheduleTimer) clearInterval(scheduleTimer)
@@ -679,9 +772,53 @@ onDeactivated(() => {
           下次 {{ scheduleTime(plusSchedule.next_run_at) }}
           · 上次完成 {{ scheduleTime(plusSchedule.last_finished_at) }}
           <template v-if="plusSchedule.last_counts?.checked">
-            · 已查 {{ plusSchedule.last_counts.checked }}，Plus {{ plusSchedule.last_counts.plus || 0 }}，失败 {{ plusSchedule.last_counts.errors || 0 }}
+            · {{ plusScheduleScopeText }}已查 {{ plusSchedule.last_counts.checked }}，Plus {{ plusSchedule.last_counts.plus || 0 }}，失败 {{ plusSchedule.last_counts.errors || 0 }}
           </template>
           <span v-if="plusSchedule.last_error" class="schedule-error"> · {{ plusSchedule.last_error }}</span>
+        </div>
+      </div>
+
+      <div class="plus-schedule-panel team-schedule-panel">
+        <div class="plus-schedule-main">
+          <div>
+            <b>定时 Team 全量前测</b>
+            <span class="hint">每轮检查选定范围内所有有 AT 的账号，不只检查未检测账号</span>
+          </div>
+          <el-tag :type="teamSchedule.running ? 'warning' : (teamSchedule.last_status === 'failed' ? 'danger' : 'success')">
+            {{ teamScheduleStatusText }}
+          </el-tag>
+          <el-switch v-model="teamSchedule.enabled" @change="saveTeamSchedule" />
+        </div>
+        <el-space wrap :size="12">
+          <span>周期</span>
+          <el-input-number
+            v-model="teamSchedule.interval_hours"
+            :min="0.25" :max="168" :step="0.5" :precision="2"
+            style="width: 130px" @change="saveTeamSchedule"
+          />
+          <span>小时</span>
+          <el-select v-model="teamSchedule.scope" style="width: 140px" @change="saveTeamSchedule">
+            <el-option label="一体化流程" value="integration" />
+            <el-option label="原有流程" value="legacy" />
+            <el-option label="全部流程" value="all" />
+          </el-select>
+          <span>并发</span>
+          <el-input-number
+            v-model="teamSchedule.workers"
+            :min="1" :max="6"
+            style="width: 100px" @change="saveTeamSchedule"
+          />
+          <el-button :loading="teamScheduleStarting" @click="runTeamScheduleNow">
+            立即全量检测 Team
+          </el-button>
+        </el-space>
+        <div class="hint plus-schedule-meta">
+          下次 {{ scheduleTime(teamSchedule.next_run_at) }}
+          · 上次完成 {{ scheduleTime(teamSchedule.last_finished_at) }}
+          <template v-if="teamSchedule.last_counts?.checked">
+            · {{ teamScheduleScopeText }}已查 {{ teamSchedule.last_counts.checked }}，可领 Team {{ teamSchedule.last_counts.eligible || 0 }}，失败 {{ teamSchedule.last_counts.errors || 0 }}
+          </template>
+          <span v-if="teamSchedule.last_error" class="schedule-error"> · {{ teamSchedule.last_error }}</span>
         </div>
       </div>
 
@@ -745,10 +882,10 @@ onDeactivated(() => {
         </el-button>
         <el-button type="danger" plain @click="deleteAll">清空全部</el-button>
         <el-tag v-if="currentPlusTotal !== null" type="success" effect="plain">
-          当前可领Plus {{ currentPlusTotal }}
+          {{ currentScopeText }}可领Plus {{ currentPlusTotal }}（全部账号）
         </el-tag>
         <el-tag v-if="currentTeamTotal !== null" type="success" effect="plain">
-          当前可领Team {{ currentTeamTotal }}
+          {{ currentScopeText }}可领Team {{ currentTeamTotal }}（全部账号）
         </el-tag>
         <span class="hint">{{ checkResult }}</span>
         <span v-if="teamResult" class="hint">{{ teamResult }}</span>
@@ -983,6 +1120,10 @@ onDeactivated(() => {
   border: 1px solid var(--el-color-primary-light-7);
   border-radius: 10px;
   background: var(--el-color-primary-light-9);
+}
+.team-schedule-panel {
+  border-color: var(--el-color-success-light-7);
+  background: var(--el-color-success-light-9);
 }
 .plus-schedule-main {
   display: flex;

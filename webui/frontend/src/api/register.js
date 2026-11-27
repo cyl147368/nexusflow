@@ -78,6 +78,15 @@ export const updatePlusSchedule = (payload) =>
 export const runPlusScheduleNow = () =>
   http.post('/api/plus/schedule/run')
 
+export const getTeamSchedule = () =>
+  http.get('/api/team/schedule')
+
+export const updateTeamSchedule = (payload) =>
+  http.put('/api/team/schedule', payload)
+
+export const runTeamScheduleNow = () =>
+  http.post('/api/team/schedule/run')
+
 export const refreshAccessTokens = (emails, proxy = '') =>
   http.post('/api/registered/refresh_at', { emails, proxy })
 
