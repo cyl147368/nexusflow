@@ -135,7 +135,7 @@ class TokenRefreshTest(unittest.TestCase):
         )
         self.assertEqual(
             flow.init_kwargs["env_overrides"]["OTP_MAX_DELIVERIES"],
-            "0",
+            "1",
         )
         kwargs = update_tokens.call_args.kwargs
         self.assertEqual(kwargs["access_token"], "fresh-at")

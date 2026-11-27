@@ -234,8 +234,8 @@ def relogin_registered_account(email: str, proxy: str = "") -> dict:
         cfg,
         env_overrides={
             "WEBUI_ALLOW_LOGIN": "1",
-            "OTP_MAX_DELIVERIES": "0",
-            "OTP_TIMEOUT": "30",
+            "OTP_MAX_DELIVERIES": "1",
+            "OTP_TIMEOUT": "180",
             "SKIP_OAUTH_TOKEN_EXCHANGE": "1",
             "OAUTH_CODEX_RT_EXCHANGE": "0",
             "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
