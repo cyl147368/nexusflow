@@ -660,10 +660,18 @@ onDeactivated(stopPolling)
           <el-form-item label="iCloud 接收邮箱">
             <el-input v-model="accountForm.icloud_email" placeholder="例如 name@icloud.com" />
           </el-form-item>
+          <el-form-item label="iCloud 密码">
+            <el-input v-model="accountForm.password" type="password" show-password
+              placeholder="Cookie 失效时用于重新登录" />
+          </el-form-item>
+          <el-form-item label="双重认证验证码">
+            <el-input v-model="accountForm.otp_code" maxlength="6"
+              placeholder="Apple 刚发送的 6 位验证码" />
+          </el-form-item>
           <el-form-item label="App 专用密码">
             <el-input v-model="accountForm.app_password" type="password" show-password />
           </el-form-item>
-          <el-form-item label="账号 Cookie">
+          <el-form-item label="账号 Cookie" class="cookie-form-item">
             <el-input v-model="accountForm.cookies" type="textarea" :rows="4"
               placeholder="可直接粘贴 DevTools Copy as cURL、Cookie Header 或 Cookie JSON" />
           </el-form-item>
@@ -1003,7 +1011,7 @@ onDeactivated(stopPolling)
 .config-card.wide { grid-column: 1 / -1; }
 .card-head { display: flex; justify-content: space-between; align-items: center; font-weight: 600; }
 .account-form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 16px; }
-.account-form :deep(.el-form-item:nth-child(6)) { grid-column: 1 / -1; }
+.account-form :deep(.cookie-form-item) { grid-column: 1 / -1; }
 .switches { display: flex; gap: 10px; flex-wrap: wrap; }
 .loop-settings {
   display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px;
