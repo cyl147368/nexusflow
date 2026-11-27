@@ -112,6 +112,7 @@ def _recover_account_login_first(
     env_overrides = {
         "WEBUI_ALLOW_LOGIN": "1",
         "OTP_TIMEOUT": str(otp_timeout),
+        "OTP_MAX_DELIVERIES": "1",
         # Recovery only needs session + access token to repair the password.
         # Codex RT commonly hits add-phone and can add minutes of pointless
         # waiting before the recovery flow reaches password/add.
@@ -339,6 +340,7 @@ def recover_account(
             env_overrides={
                 "WEBUI_ALLOW_LOGIN": "1",
                 "OTP_TIMEOUT": str(otp_timeout),
+                "OTP_MAX_DELIVERIES": "1",
                 "SKIP_OAUTH_TOKEN_EXCHANGE": "1",
                 "OAUTH_CODEX_RT_EXCHANGE": "0",
                 "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",

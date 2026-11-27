@@ -153,6 +153,7 @@ class AuthFlow:
         self.config = config
         self._country_code = ""  # IP 地理国家码，check_proxy() 时填充
         self._flow_started_at = time.time()
+        self._otp_delivery_count = 0
         self._fingerprint = _stable_firefox_fingerprint()
         self._ua = self._fingerprint["user_agent"]
         self._impersonate_candidates = self._fingerprint.get(
@@ -726,6 +727,29 @@ class AuthFlow:
         """
         v = self._env_overrides.get(name)
         return os.getenv(name, default) if v is None else str(v)
+
+    def _reserve_otp_delivery(self, reason: str) -> bool:
+        """Enforce a per-flow OTP delivery budget."""
+        try:
+            limit = max(1, int(self._get_env("OTP_MAX_DELIVERIES", "2")))
+        except Exception:
+            limit = 2
+        if self._otp_delivery_count >= limit:
+            logger.warning(
+                "OTP delivery suppressed by budget (%s/%s, reason=%s)",
+                self._otp_delivery_count,
+                limit,
+                reason,
+            )
+            return False
+        self._otp_delivery_count += 1
+        logger.info(
+            "OTP delivery reserved (%s/%s, reason=%s)",
+            self._otp_delivery_count,
+            limit,
+            reason,
+        )
+        return True
 
     def _env_flag(self, name: str, default: str = "0") -> bool:
         # 原本是 @staticmethod，为了读 self._env_overrides 改成实例方法。
@@ -3253,6 +3277,8 @@ class AuthFlow:
         )
 
     def send_otp(self, referer: str = "https://auth.openai.com/create-account/password"):
+        if not self._reserve_otp_delivery("send_otp"):
+            raise RuntimeError("OTP delivery budget exhausted")
         logger.info(f"[6/10] 发送 OTP (referer={referer.split('/')[-1]})...")
         headers = self._common_headers(referer)
         if self._last_sentinel_token:
@@ -3277,6 +3303,8 @@ class AuthFlow:
         先按当前抓包形态使用统一的 auth JSON 请求头；服务端接口变更时再回退
         email-otp/send。409 表示已有 challenge，优先 resend，避免 OTP 静默失效。
         """
+        if not self._reserve_otp_delivery("send_passwordless_otp"):
+            return False
         Accept = "*/*"
         request_headers = {
             "Accept": Accept,
@@ -3364,6 +3392,8 @@ class AuthFlow:
         return False
 
     def resend_otp(self, referer: str = "https://auth.openai.com/email-verification") -> bool:
+        if not self._reserve_otp_delivery("resend_otp"):
+            return False
         """
         重发 OTP（适用于已有账号 passwordless/login_challenge）。
         返回 True 代表请求成功。
@@ -4904,6 +4934,8 @@ class AuthFlow:
         if so_token:
             headers["openai-sentinel-so-token"] = so_token
         otp_sent_at = time.time()
+        if not self._reserve_otp_delivery("reset_password_send_otp"):
+            raise RuntimeError("OTP delivery budget exhausted")
         sent = self.session.post(
             "https://auth.openai.com/api/accounts/password/send-otp",
             headers=headers,

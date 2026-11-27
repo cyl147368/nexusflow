@@ -947,7 +947,10 @@ def _do_recovery_batch(batch_id: str, log_file: Path, job: dict | None = None) -
             retry_kind = _recovery_retry_kind(error_text)
             if not result.get("ok") and retry_kind:
                 retries = int(retry_counts.get(email) or 0)
-                max_retries = 5 if retry_kind == "rate_limit" else 3
+                if options.get("delete_alias_on_failure"):
+                    max_retries = 0
+                else:
+                    max_retries = 5 if retry_kind == "rate_limit" else 3
                 if retries < max_retries:
                     retries += 1
                     retry_counts[email] = retries

@@ -2104,6 +2104,16 @@ class IntegrationApiTest(unittest.TestCase):
         self.assertEqual(saved["alias_delete_error"], "partial_credentials_present")
         delete.assert_not_called()
 
+    def test_auth_flow_enforces_otp_delivery_budget(self):
+        from auth_flow import AuthFlow
+
+        flow = AuthFlow.__new__(AuthFlow)
+        flow._env_overrides = {"OTP_MAX_DELIVERIES": "1"}
+        flow._otp_delivery_count = 0
+
+        self.assertTrue(flow._reserve_otp_delivery("first"))
+        self.assertFalse(flow._reserve_otp_delivery("second"))
+
 
 if __name__ == "__main__":
     unittest.main()
