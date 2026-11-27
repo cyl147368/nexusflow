@@ -1851,6 +1851,48 @@ class IntegrationApiTest(unittest.TestCase):
         )
         self.assertEqual(body["text"], "access-plus")
 
+    def test_st_export_uses_backend_72_hour_marker_without_changing_text(self):
+        import time
+
+        from webui import db
+
+        now = time.time()
+        db.save_registered({
+            "email": "st-recent@example.com",
+            "workflow_scope": "integration",
+            "session_token": "recent-st",
+            "st_last_exported_at": now,
+        })
+        db.save_registered({
+            "email": "st-old@example.com",
+            "workflow_scope": "integration",
+            "session_token": "old-st",
+            "st_last_exported_at": now - 4 * 24 * 3600,
+        })
+
+        payload = {
+            "format": "st",
+            "all": True,
+            "workflow_scope": "integration",
+            "filter": "all",
+        }
+        first = self.client.post("/api/registered/export", json=payload)
+        second = self.client.post("/api/registered/export", json=payload)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["count"], 1)
+        self.assertEqual(first.json()["emails"], ["st-old@example.com"])
+        self.assertEqual(first.json()["text"], "old-st")
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["count"], 0)
+        self.assertEqual(second.json()["text"], "")
+        saved = db.get_registered("st-old@example.com")
+        self.assertGreater(
+            saved["extra"]["st_last_exported_at"],
+            now - 10,
+        )
+        self.assertEqual(saved["extra"]["st_export_count"], 1)
+
     def test_backfill_marks_persisted_integration_aliases(self):
         from webui import db
 

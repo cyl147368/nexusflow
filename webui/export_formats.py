@@ -62,6 +62,7 @@ FORMATS: list[ExportFormat] = [
         label="session_token",
         filename="ST.txt",
         render=lambda r: _s(r, "session_token"),
+        note="后台记录导出时间；自动排除最近 72 小时导出过的账号",
     ),
     ExportFormat(
         id="at_st",

@@ -1037,6 +1037,47 @@ def update_registered_tokens(
         return rc.rowcount > 0
 
 
+def mark_st_exported(
+    emails: list[str],
+    exported_at: Optional[float] = None,
+) -> int:
+    """Record one successful ST export per account."""
+    cleaned = list(dict.fromkeys(
+        str(email or "").strip().lower()
+        for email in (emails or [])
+        if str(email or "").strip()
+    ))
+    if not cleaned:
+        return 0
+    stamp = float(exported_at or time.time())
+    updated = 0
+    with _lock, closing(_conn()) as con:
+        for email in cleaned:
+            row = con.execute(
+                "SELECT extra_json FROM registered WHERE email=?",
+                (email,),
+            ).fetchone()
+            if not row:
+                continue
+            try:
+                extra = json.loads(row["extra_json"] or "{}")
+                if not isinstance(extra, dict):
+                    extra = {}
+            except Exception:
+                extra = {}
+            extra["st_last_exported_at"] = stamp
+            extra["st_export_count"] = int(
+                extra.get("st_export_count") or 0
+            ) + 1
+            con.execute(
+                "UPDATE registered SET extra_json=? WHERE email=?",
+                (json.dumps(extra, ensure_ascii=False), email),
+            )
+            updated += 1
+        con.commit()
+    return updated
+
+
 def _registered_where(
     filt: str,
     workflow_scope: str = "",

@@ -880,6 +880,22 @@ def api_export_registered(req: ExportRegisteredReq):
 
     # 不跳行：勾了几个号就几行 / 几个文件，字段为空也照样出。
     # 手动导出**不做 refresh_token 刷新、不因为缺 rt 拦截**，这是和自动推送的区别。
+    st_exported_at = time.time() if fmt.id == "st" else 0.0
+    if st_exported_at:
+        cutoff = st_exported_at - 72 * 3600
+        eligible_rows = []
+        for row in rows:
+            extra = row.get("extra")
+            if not isinstance(extra, dict):
+                extra = {}
+            try:
+                last_exported = float(extra.get("st_last_exported_at") or 0)
+            except (TypeError, ValueError):
+                last_exported = 0.0
+            if last_exported < cutoff:
+                eligible_rows.append(row)
+        rows = eligible_rows
+
     base = {
         "ok": True,
         "count": len(rows),
@@ -899,7 +915,12 @@ def api_export_registered(req: ExportRegisteredReq):
         blob = export_formats.render_bytes(rows, fmt)
         return {**base, "b64": base64.b64encode(blob).decode("ascii"), "size": len(blob)}
 
-    return {**base, "text": export_formats.render_text(rows, fmt)}
+    text = export_formats.render_text(rows, fmt)
+    if fmt.id == "st":
+        if rows:
+            db.mark_st_exported(base["emails"], st_exported_at)
+        base["exported_at"] = st_exported_at
+    return {**base, "text": text}
 
 
 # ──────────────────────── 邮箱来源配置 ────────────────────────
