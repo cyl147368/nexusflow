@@ -1232,6 +1232,297 @@ class IntegrationApiTest(unittest.TestCase):
             "plus_eligible",
         )
 
+    def test_fast_plus_check_refreshes_revoked_at_and_retries(self):
+        from webui import db
+
+        email = "plus-refresh@example.com"
+        db.save_registered({
+            "email": email,
+            "workflow_scope": "integration",
+            "access_token": "revoked-at",
+            "session_token": "valid-st",
+            "plus_check": {"status": "token_invalid"},
+            "team_promo_check": {"status": "token_invalid"},
+        })
+
+        class FakeResponse:
+            def __init__(self, status_code, body, text=""):
+                self.status_code = status_code
+                self.body = body
+                self.text = text
+
+            def json(self):
+                return self.body
+
+        class FakeSession:
+            def get(self, url, headers=None, timeout=0):
+                del timeout
+                token = (headers or {}).get("Authorization", "")
+                if "accounts/check" in url:
+                    if "revoked-at" in token:
+                        return FakeResponse(
+                            401,
+                            {"error": {"code": "token_revoked"}},
+                            '{"code":"token_revoked",'
+                            '"message":"invalidated oauth token"}',
+                        )
+                    return FakeResponse(200, {
+                        "accounts": {
+                            "default": {
+                                "account": {"plan_type": "free"},
+                                "entitlement": {
+                                    "has_active_subscription": False,
+                                },
+                                "eligible_promo_campaigns": {},
+                            },
+                        },
+                    })
+                if "promo_campaign/check_coupon" in url:
+                    return FakeResponse(200, {
+                        "coupon": "plus-1-month-free",
+                        "state": "eligible",
+                        "redemption": {"redeemed": False},
+                    })
+                raise AssertionError(f"unexpected URL: {url}")
+
+            def close(self):
+                return None
+
+        def refresh(address, proxy):
+            self.assertEqual(address, email)
+            self.assertEqual(proxy, "")
+            db.update_registered_tokens(
+                address,
+                access_token="fresh-at",
+                session_token="valid-st",
+                refreshed_at=1,
+                method="session_token",
+                expires=3600,
+            )
+            return {"ok": True, "email": address, "status": "success"}
+
+        with (
+            patch(
+                "http_client.create_http_session",
+                return_value=FakeSession(),
+            ),
+            patch(
+                "webui.token_refresh.refresh_registered_access_token",
+                side_effect=refresh,
+            ),
+        ):
+            response = self.client.post(
+                "/api/registered/check_plus_fast",
+                json={"emails": [email], "proxy": "", "workers": 1},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["results"][email]["status"],
+            "plus_eligible",
+            response.json(),
+        )
+        saved = db.get_registered(email)
+        self.assertEqual(saved["access_token"], "fresh-at")
+        self.assertEqual(
+            saved["extra"]["plus_check"]["status"],
+            "plus_eligible",
+        )
+        self.assertNotIn("team_promo_check", saved["extra"])
+
+    def test_check_plus_refreshes_revoked_at_and_retries(self):
+        from webui import db
+
+        email = "plus-slow-refresh@example.com"
+        db.save_registered({
+            "email": email,
+            "workflow_scope": "integration",
+            "access_token": "slow-revoked-at",
+            "session_token": "slow-valid-st",
+        })
+
+        class FakeResponse:
+            def __init__(self, status_code, body, text=""):
+                self.status_code = status_code
+                self.body = body
+                self.text = text
+
+            def json(self):
+                return self.body
+
+        class FakeSession:
+            def get(self, url, headers=None, timeout=0):
+                del timeout
+                token = (headers or {}).get("Authorization", "")
+                if "accounts/check" in url:
+                    if "slow-revoked-at" in token:
+                        return FakeResponse(
+                            401,
+                            {"error": {"code": "token_revoked"}},
+                            '{"code":"token_revoked",'
+                            '"message":"invalidated oauth token"}',
+                        )
+                    return FakeResponse(200, {
+                        "accounts": {
+                            "default": {
+                                "account": {"plan_type": "free"},
+                                "entitlement": {
+                                    "has_active_subscription": False,
+                                },
+                                "eligible_promo_campaigns": {},
+                            },
+                        },
+                    })
+                if "promo_campaign/check_coupon" in url:
+                    return FakeResponse(200, {
+                        "coupon": "plus-1-month-free",
+                        "state": "eligible",
+                        "redemption": {"redeemed": False},
+                    })
+                raise AssertionError(f"unexpected URL: {url}")
+
+            def close(self):
+                return None
+
+        def refresh(address, proxy):
+            self.assertEqual(address, email)
+            self.assertEqual(proxy, "")
+            db.update_registered_tokens(
+                address,
+                access_token="slow-fresh-at",
+                session_token="slow-valid-st",
+                refreshed_at=1,
+                method="session_token",
+                expires=3600,
+            )
+            return {"ok": True, "email": address, "status": "success"}
+
+        with (
+            patch(
+                "http_client.create_http_session",
+                return_value=FakeSession(),
+            ),
+            patch(
+                "webui.token_refresh.refresh_registered_access_token",
+                side_effect=refresh,
+            ),
+        ):
+            response = self.client.post(
+                "/api/registered/check_plus",
+                json={"emails": [email], "proxy": ""},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["results"][email]["status"],
+            "plus_eligible",
+            response.json(),
+        )
+        self.assertEqual(
+            db.get_registered(email)["access_token"],
+            "slow-fresh-at",
+        )
+
+    def test_team_check_refreshes_revoked_at_and_retries(self):
+        from webui import db
+
+        email = "team-refresh@example.com"
+        db.save_registered({
+            "email": email,
+            "workflow_scope": "integration",
+            "access_token": "revoked-team-at",
+            "session_token": "valid-team-st",
+            "plus_check": {"status": "token_invalid"},
+            "team_promo_check": {"status": "token_invalid"},
+        })
+
+        class FakeResponse:
+            def __init__(self, status_code, body, text=""):
+                self.status_code = status_code
+                self.body = body
+                self.text = text
+
+            def json(self):
+                return self.body
+
+        class FakeSession:
+            def get(self, url, headers=None, timeout=0):
+                del timeout
+                token = (headers or {}).get("Authorization", "")
+                if "accounts/check" in url:
+                    if "revoked-team-at" in token:
+                        return FakeResponse(
+                            401,
+                            {"error": {"code": "token_revoked"}},
+                            '{"code":"token_revoked",'
+                            '"message":"invalidated oauth token"}',
+                        )
+                    return FakeResponse(200, {
+                        "accounts": {
+                            "default": {
+                                "account": {
+                                    "account_id": "acct-personal",
+                                    "structure": "personal",
+                                    "plan_type": "free",
+                                },
+                                "entitlement": {
+                                    "has_active_subscription": False,
+                                },
+                            },
+                        },
+                    })
+                if "promo_campaign/check_coupon" in url:
+                    return FakeResponse(200, {
+                        "coupon": "team-1-month-free",
+                        "state": "eligible",
+                        "redemption": {"redeemed": False},
+                    })
+                raise AssertionError(f"unexpected URL: {url}")
+
+            def close(self):
+                return None
+
+        def refresh(address, proxy):
+            self.assertEqual(address, email)
+            self.assertEqual(proxy, "")
+            db.update_registered_tokens(
+                address,
+                access_token="fresh-team-at",
+                session_token="valid-team-st",
+                refreshed_at=1,
+                method="session_token",
+                expires=3600,
+            )
+            return {"ok": True, "email": address, "status": "success"}
+
+        with (
+            patch(
+                "http_client.create_http_session",
+                return_value=FakeSession(),
+            ),
+            patch(
+                "webui.token_refresh.refresh_registered_access_token",
+                side_effect=refresh,
+            ),
+        ):
+            response = self.client.post(
+                "/api/registered/check_team_promo_fast",
+                json={"emails": [email], "workers": 1},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["results"][email]["status"],
+            "team_eligible",
+        )
+        saved = db.get_registered(email)
+        self.assertEqual(saved["access_token"], "fresh-team-at")
+        self.assertEqual(
+            saved["extra"]["team_promo_check"]["status"],
+            "team_eligible",
+        )
+        self.assertNotIn("plus_check", saved["extra"])
+
     def test_team_promo_check_classifies_persists_and_filters(self):
         from webui import db
 

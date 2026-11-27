@@ -1319,6 +1319,51 @@ def _looks_deactivated(body: str) -> bool:
     return any(m in body.lower() for m in _DEACTIVATED_MARKERS)
 
 
+def _is_revoked_access_token_response(body: str) -> bool:
+    """Return true only for OpenAI's recoverable OAuth-token revocation."""
+    lowered = (body or "").lower()
+    return (
+        "token_revoked" in lowered
+        or "invalidated oauth token" in lowered
+    )
+
+
+def _refresh_access_token_for_retry(
+    email: str,
+    proxy: str,
+    log: logging.Logger,
+    tag: str,
+) -> tuple[dict | None, str]:
+    """Refresh one account's AT and return the updated credential row."""
+    from . import token_refresh
+
+    try:
+        result = token_refresh.refresh_registered_access_token(
+            email,
+            proxy,
+        )
+    except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
+        log.warning(f"[{tag}] {email} 自动刷新 AT 异常: {error[:180]}")
+        return None, error
+    if not result.get("ok"):
+        error = str(result.get("error") or "Session Token 刷新失败")
+        log.warning(f"[{tag}] {email} 自动刷新 AT 失败: {error[:180]}")
+        return None, error
+
+    cred = db.get_registered(email)
+    if not cred or not str(cred.get("access_token") or "").strip():
+        error = "AT 刷新返回成功，但数据库中没有新 AT"
+        log.warning(f"[{tag}] {email} {error}")
+        return None, error
+    log.info(
+        "[%s] %s 遇到 token_revoked，已用 Session Token 刷新 AT",
+        tag,
+        email,
+    )
+    return cred, ""
+
+
 def _classify_plus_payload(data: dict) -> dict:
     """Classify every usable account node in an accounts/check response.
 
@@ -1650,13 +1695,90 @@ def api_check_plus(req: CheckPlusReq):
                 log.info(f"[check_plus] {email} 判定封号 (HTTP {resp.status_code}): {body[:200]}")
                 continue
             if resp.status_code == 401:
-                results[email] = {"status": "token_invalid", "label": "凭证失效"}
-                # 日志留原文：万一是没覆盖到的封号措辞，主人看一眼就能告诉我补进去。
-                log.info(f"[check_plus] {email} 401 响应体: {body[:200]}")
+                if _is_revoked_access_token_response(body):
+                    refreshed, refresh_error = _refresh_access_token_for_retry(
+                        email,
+                        proxy,
+                        log,
+                        "check_plus",
+                    )
+                    if refreshed:
+                        at = str(refreshed.get("access_token") or "").strip()
+                        auth_claims = _get_auth(_decode_jwt_payload(at))
+                        account_id = str(
+                            auth_claims.get("chatgpt_account_id")
+                            or auth_claims.get("account_id")
+                            or ""
+                        ).strip()
+                        device_id = (
+                            str(refreshed.get("device_id") or "").strip()
+                            or str(uuid.uuid5(
+                                uuid.NAMESPACE_DNS,
+                                f"dango-check-plus:{email}",
+                            ))
+                        )
+                        cookie_header = str(
+                            refreshed.get("cookie_header") or ""
+                        ).strip()
+                        try:
+                            resp, request_headers = _check(
+                                at,
+                                account_id,
+                                device_id,
+                                cookie_header,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            results[email] = {
+                                "status": "error",
+                                "label": "刷新 AT 后网络失败",
+                                "refreshed_access_token": True,
+                            }
+                            log.warning(
+                                f"[check_plus] {email} 刷新 AT 后请求失败: "
+                                f"{str(exc)[:140]}"
+                            )
+                            continue
+                        if resp.status_code in (401, 403):
+                            retry_body = _body_text(resp)
+                            if _looks_deactivated(retry_body):
+                                results[email] = {
+                                    "status": "banned",
+                                    "label": "封号",
+                                }
+                                continue
+                            results[email] = {
+                                "status": "token_invalid",
+                                "label": "登录会话失效",
+                                "refresh_attempted": True,
+                            }
+                            log.warning(
+                                f"[check_plus] {email} 刷新 AT 后仍返回 "
+                                f"{resp.status_code}: {retry_body[:200]}"
+                            )
+                            continue
+                    else:
+                        results[email] = {
+                            "status": "token_invalid",
+                            "label": "登录凭证失效",
+                            "refresh_attempted": True,
+                            "refresh_error": refresh_error,
+                        }
+                        continue
+                else:
+                    results[email] = {
+                        "status": "token_invalid",
+                        "label": "凭证失效",
+                    }
+                    # 日志留原文：万一是没覆盖到的封号措辞，主人看一眼就能告诉我补进去。
+                    log.info(f"[check_plus] {email} 401 响应体: {body[:200]}")
+                    continue
+            else:
+                results[email] = {
+                    "status": "error",
+                    "label": f"HTTP {resp.status_code}",
+                }
+                log.info(f"[check_plus] {email} 403 响应体: {body[:200]}")
                 continue
-            results[email] = {"status": "error", "label": f"HTTP {resp.status_code}"}
-            log.info(f"[check_plus] {email} 403 响应体: {body[:200]}")
-            continue
         if resp.status_code != 200:
             results[email] = {"status": "error", "label": f"HTTP {resp.status_code}"}
             continue
@@ -1799,15 +1921,91 @@ def api_check_plus_fast(req: CheckPlusReq):
                 body = _body_text(resp)
                 if _looks_deactivated(body):
                     return email, {"status": "banned", "label": "封号"}, ""
-                if resp.status_code == 401:
+                if (
+                    resp.status_code == 401
+                    and _is_revoked_access_token_response(body)
+                ):
+                    refreshed, refresh_error = _refresh_access_token_for_retry(
+                        email,
+                        proxy,
+                        log,
+                        "check_plus",
+                    )
+                    if not refreshed:
+                        return email, {
+                            "status": "token_invalid",
+                            "label": "登录凭证失效",
+                            "refresh_attempted": True,
+                            "refresh_error": refresh_error,
+                        }, ""
+                    access_token = str(
+                        refreshed.get("access_token") or ""
+                    ).strip()
+                    try:
+                        claims = _get_auth(
+                            _decode_jwt_payload(access_token)
+                        )
+                    except Exception:  # noqa: BLE001
+                        claims = {}
+                    account_id = str(
+                        claims.get("chatgpt_account_id")
+                        or claims.get("account_id")
+                        or ""
+                    ).strip()
+                    cookie_header = str(
+                        refreshed.get("cookie_header") or ""
+                    ).strip()
+                    device_id = (
+                        str(refreshed.get("device_id") or "").strip()
+                        or device_id
+                    )
+                    headers["Authorization"] = f"Bearer {access_token}"
+                    headers["OAI-Device-Id"] = device_id
+                    if account_id:
+                        headers["ChatGPT-Account-ID"] = account_id
+                    else:
+                        headers.pop("ChatGPT-Account-ID", None)
+                    if cookie_header:
+                        headers["Cookie"] = cookie_header
+                    try:
+                        resp = sess.get(url, headers=headers, timeout=15)
+                    except Exception as exc:  # noqa: BLE001
+                        note = (
+                            f"AT 已自动刷新，但重试网络失败: "
+                            f"{type(exc).__name__}"
+                        )
+                        return email, {
+                            "status": "error",
+                            "label": "刷新 AT 后网络失败",
+                            "refreshed_access_token": True,
+                        }, note
+                    if resp.status_code in (401, 403):
+                        retry_body = _body_text(resp)
+                        if _looks_deactivated(retry_body):
+                            return email, {
+                                "status": "banned",
+                                "label": "封号",
+                            }, ""
+                        if resp.status_code == 401:
+                            return email, {
+                                "status": "token_invalid",
+                                "label": "登录会话失效",
+                                "refresh_attempted": True,
+                            }, ""
+                        return email, {
+                            "status": "error",
+                            "label": "HTTP 403",
+                        }, ""
+                elif resp.status_code == 401:
                     return email, {
                         "status": "token_invalid",
                         "label": "凭证失效",
                     }, ""
-                return email, {
-                    "status": "error",
-                    "label": "HTTP 403",
-                }, ""
+                else:
+                    return email, {
+                        "status": "error",
+                        "label": "HTTP 403",
+                    }, ""
             if resp.status_code != 200:
                 return email, {
                     "status": "error",
@@ -1925,6 +2123,37 @@ def api_check_team_promo_fast(req: CheckTeamPromoReq):
             if cookie_header:
                 headers["Cookie"] = cookie_header
 
+            def apply_refreshed_credential(refreshed: dict) -> None:
+                new_access_token = str(
+                    refreshed.get("access_token") or ""
+                ).strip()
+                headers["Authorization"] = f"Bearer {new_access_token}"
+                try:
+                    claims = _get_auth(
+                        _decode_jwt_payload(new_access_token)
+                    )
+                except Exception:  # noqa: BLE001
+                    claims = {}
+                new_account_id = str(
+                    claims.get("chatgpt_account_id")
+                    or claims.get("account_id")
+                    or ""
+                ).strip()
+                if new_account_id:
+                    headers["ChatGPT-Account-ID"] = new_account_id
+                else:
+                    headers.pop("ChatGPT-Account-ID", None)
+                new_device_id = str(
+                    refreshed.get("device_id") or ""
+                ).strip()
+                if new_device_id:
+                    headers["OAI-Device-Id"] = new_device_id
+                new_cookie_header = str(
+                    refreshed.get("cookie_header") or ""
+                ).strip()
+                if new_cookie_header:
+                    headers["Cookie"] = new_cookie_header
+
             try:
                 accounts_resp = sess.get(accounts_url, headers=headers, timeout=20)
             except Exception as exc:  # noqa: BLE001
@@ -1934,9 +2163,64 @@ def api_check_team_promo_fast(req: CheckTeamPromoReq):
                 body = _body_text(accounts_resp)
                 if _looks_deactivated(body):
                     return email, {"status": "banned", "label": "封号"}, ""
-                if accounts_resp.status_code == 401:
+                if (
+                    accounts_resp.status_code == 401
+                    and _is_revoked_access_token_response(body)
+                ):
+                    refreshed, refresh_error = _refresh_access_token_for_retry(
+                        email,
+                        "",
+                        log,
+                        "check_team_promo",
+                    )
+                    if not refreshed:
+                        return email, {
+                            "status": "token_invalid",
+                            "label": "登录凭证失效",
+                            "refresh_attempted": True,
+                            "refresh_error": refresh_error,
+                        }, ""
+                    apply_refreshed_credential(refreshed)
+                    try:
+                        accounts_resp = sess.get(
+                            accounts_url,
+                            headers=headers,
+                            timeout=20,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        note = (
+                            "AT 已自动刷新，但账号查询重试网络失败: "
+                            f"{type(exc).__name__}"
+                        )
+                        return email, {
+                            "status": "error",
+                            "label": "刷新 AT 后网络失败",
+                            "refreshed_access_token": True,
+                        }, note
+                    if accounts_resp.status_code in {401, 403}:
+                        retry_body = _body_text(accounts_resp)
+                        if _looks_deactivated(retry_body):
+                            return email, {
+                                "status": "banned",
+                                "label": "封号",
+                            }, ""
+                        if accounts_resp.status_code == 401:
+                            return email, {
+                                "status": "token_invalid",
+                                "label": "登录会话失效",
+                                "refresh_attempted": True,
+                            }, ""
+                        return email, {
+                            "status": "error",
+                            "label": "HTTP 403",
+                        }, ""
+                elif accounts_resp.status_code == 401:
                     return email, {"status": "token_invalid", "label": "凭证失效"}, ""
-                return email, {"status": "error", "label": "HTTP 403"}, ""
+                else:
+                    return email, {
+                        "status": "error",
+                        "label": "HTTP 403",
+                    }, ""
             if accounts_resp.status_code != 200:
                 return email, {
                     "status": "error",
@@ -1968,6 +2252,34 @@ def api_check_team_promo_fast(req: CheckTeamPromoReq):
                 _TEAM_PROMO_COUPON,
                 timeout=20,
             )
+            if (
+                not probe.get("ok")
+                and str(probe.get("state") or "") == "http_401"
+                and _is_revoked_access_token_response(
+                    str(probe.get("error") or "")
+                )
+            ):
+                refreshed, refresh_error = _refresh_access_token_for_retry(
+                    email,
+                    "",
+                    log,
+                    "check_team_promo",
+                )
+                if not refreshed:
+                    return email, {
+                        "status": "token_invalid",
+                        "label": "登录凭证失效",
+                        "refresh_attempted": True,
+                        "refresh_error": refresh_error,
+                    }, ""
+                apply_refreshed_credential(refreshed)
+                headers["ChatGPT-Account-ID"] = selected["id"]
+                probe = _probe_promo_coupon(
+                    sess,
+                    headers,
+                    _TEAM_PROMO_COUPON,
+                    timeout=20,
+                )
             if not probe.get("ok"):
                 state = str(probe.get("state") or "")
                 if state == "http_401":

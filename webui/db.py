@@ -997,6 +997,15 @@ def update_registered_tokens(
             extra["at_refresh_method"] = str(method)
         if expires not in (None, ""):
             extra["access_token_expires"] = expires
+        # A refreshed AT invalidates the previous "token_invalid" conclusion.
+        # Remove only that stale verdict; real Plus/Team results stay untouched.
+        for check_key in ("plus_check", "team_promo_check"):
+            check = extra.get(check_key)
+            if (
+                isinstance(check, dict)
+                and str(check.get("status") or "") == "token_invalid"
+            ):
+                extra.pop(check_key, None)
 
         fields = ["access_token=?", "extra_json=?"]
         values: list = [access_token, json.dumps(extra, ensure_ascii=False)]

@@ -701,7 +701,7 @@ onDeactivated(() => {
           <el-option label="可领Plus" value="plus" />
           <el-option label="可领Team" value="team_eligible" />
           <el-option label="已封号" value="banned" />
-          <el-option label="凭证失效" value="token_invalid" />
+          <el-option label="登录凭证失效" value="token_invalid" />
         </el-select>
         <el-select
           v-model="form.proxy" filterable clearable allow-create default-first-option
