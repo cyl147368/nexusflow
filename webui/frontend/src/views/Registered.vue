@@ -529,20 +529,39 @@ async function loadExportFormats() {
 }
 
 async function doExport(fmt) {
-  const emails = selected.value.map((r) => r.email)
+  const allExportedSt = fmt === '__all_st__'
+  const target = allExportedSt
+    ? (exportFormats.value.find((item) => item.id === 'st') || {
+        id: 'st',
+        label: 'session_token',
+        filename: 'ST.txt',
+      })
+    : fmt
+  const emails = allExportedSt ? [] : selected.value.map((r) => r.email)
   // 没勾选 = 导出全部（跨页，不只当前页）
-  const payload = emails.length
-    ? { format: fmt.id, emails }
-    : {
-        format: fmt.id,
+  const payload = allExportedSt
+    ? {
+        format: 'st',
         all: true,
-        workflow_scope: workflowFilter.value,
-        filter: filter.value,
+        workflow_scope: '',
+        filter: 'all',
       }
+    : emails.length
+      ? { format: target.id, emails }
+      : {
+          format: target.id,
+          all: true,
+          workflow_scope: workflowFilter.value,
+          filter: filter.value,
+        }
   exporting.value = true
   try {
     const r = await exportRegistered(payload)
     exportedEmails.value = (r.emails || []).filter(Boolean)
+    if (target.id === 'st' && !r.count) {
+      ElMessage.info('没有可导出的 ST：最近 72 小时导出的账号已全部跳过')
+      return
+    }
     // download 模式（CPA zip / SUB2API json）：不弹预览，直接落盘
     if (r.mode === 'download') {
       saveBlob(b64ToBytes(r.b64), r.filename, r.mime)
@@ -552,7 +571,9 @@ async function doExport(fmt) {
     exportText.value = r.text || ''
     exportCount.value = r.count || 0
     exportFilename.value = r.filename || 'export.txt'
-    exportLabel.value = r.label || fmt.label
+    exportLabel.value = allExportedSt
+      ? '全部未导出的 session_token'
+      : (r.label || target.label)
     exportVisible.value = true
   } catch (e) { ElMessage.error('导出失败: ' + e.message) }
   finally { exporting.value = false }
@@ -890,6 +911,9 @@ onDeactivated(() => {
               <el-dropdown-item v-for="f in exportFormats" :key="f.id" :command="f" :divided="f.mode === 'download' && f.id === 'cpa'">
                 {{ f.label }}
                 <span v-if="f.note" class="hint" style="margin-left: 6px">{{ f.note }}</span>
+              </el-dropdown-item>
+              <el-dropdown-item command="__all_st__" divided>
+                全部未导出的 ST（跨流程/筛选，72 小时去重）
               </el-dropdown-item>
               <el-dropdown-item v-if="!exportFormats.length" disabled>加载中...</el-dropdown-item>
             </el-dropdown-menu>

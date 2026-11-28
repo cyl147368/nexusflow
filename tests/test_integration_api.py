@@ -1869,20 +1869,32 @@ class IntegrationApiTest(unittest.TestCase):
             "session_token": "old-st",
             "st_last_exported_at": now - 4 * 24 * 3600,
         })
+        db.save_registered({
+            "email": "st-old-legacy@example.com",
+            "workflow_scope": "legacy",
+            "session_token": "old-legacy-st",
+            "st_last_exported_at": now - 4 * 24 * 3600,
+        })
 
         payload = {
             "format": "st",
             "all": True,
-            "workflow_scope": "integration",
+            "workflow_scope": "",
             "filter": "all",
         }
         first = self.client.post("/api/registered/export", json=payload)
         second = self.client.post("/api/registered/export", json=payload)
 
         self.assertEqual(first.status_code, 200)
-        self.assertEqual(first.json()["count"], 1)
-        self.assertEqual(first.json()["emails"], ["st-old@example.com"])
-        self.assertEqual(first.json()["text"], "old-st")
+        self.assertEqual(first.json()["count"], 2)
+        self.assertEqual(
+            set(first.json()["emails"]),
+            {"st-old@example.com", "st-old-legacy@example.com"},
+        )
+        self.assertEqual(
+            set(first.json()["text"].splitlines()),
+            {"old-st", "old-legacy-st"},
+        )
         self.assertEqual(second.status_code, 200)
         self.assertEqual(second.json()["count"], 0)
         self.assertEqual(second.json()["text"], "")
